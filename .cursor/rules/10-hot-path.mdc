@@ -1,0 +1,47 @@
+---
+description: Real-time hot path invariants for src/
+globs: src/**/*.cpp,src/**/*.h
+alwaysApply: false
+---
+
+# Hot path invariants
+
+Code inside the fixed-rate loop body runs 250 times per second with a hard
+deadline. A single violation of any rule below shows up as a spike in the p99.99
+tail, which is the exact number this repo exists to report. These are not style
+preferences.
+
+Inside the loop, nothing may:
+
+- allocate or free. No `new`, no `malloc`, no `push_back`, no `std::string`
+  construction, no `std::vector` resize, no `std::function`. Buffers are sized
+  and touched before the loop starts.
+- perform I/O. No `printf`, no `std::cout`, no `fprintf`, no logging call of any
+  kind. stdio takes a lock and can fault a page. Samples go into the
+  preallocated `RingLog` and are written after the run ends.
+- take a lock or block. No mutex, no condition variable, no `std::async`.
+- throw. Exception unwinding is unbounded. Return status, do not throw.
+- call anything whose worst-case duration you cannot state.
+
+Additional standing rules for `src/`:
+
+- Timing uses monotonic clocks only. `CLOCK_MONOTONIC` on Linux,
+  `CLOCK_UPTIME_RAW` on Darwin. Never wall clock, never `std::chrono::system_clock`:
+  an NTP correction mid-run corrupts the whole dataset.
+- Sleeps are absolute, never relative. `clock_nanosleep(TIMER_ABSTIME)` and
+  `mach_wait_until`. A relative sleep folds each wake error into the following
+  period and the loop drifts roughly 3.5% slow, measured.
+- Platform differences live behind `rt_platform.h` and nowhere else. No
+  `#ifdef __APPLE__` in loop or estimator code.
+- Privilege failures downgrade to a recorded warning, never an abort. The same
+  binary must run unprivileged on a laptop and privileged on the RT host, and
+  the CSV header records which configuration actually applied.
+- Prefer `-O2` over `-O3` and keep the generated code legible.
+
+Mark the loop body with sentinels so the pre-commit hook can scan it:
+
+    // HOT PATH BEGIN
+    // HOT PATH END
+
+When reviewing this directory, check for these violations first and name them
+explicitly. That is the most useful thing you can do here.

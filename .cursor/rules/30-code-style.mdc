@@ -1,0 +1,57 @@
+---
+description: Comment and code style
+globs: src/**/*.cpp,src/**/*.h,analysis/**/*.py,injector/**/*.cpp
+alwaysApply: false
+---
+
+# Comments
+
+Comment the why, never the what. The code already says what it does. A comment
+earns its place by recording something the code cannot: a decision, a
+constraint, a measured number, a rejected alternative, a trap.
+
+Good:
+
+    // Advance the deadline outside the sleep. A relative sleep folds each wake
+    // error into the next period; measured at 3.5% drift over 10 s at 250 Hz.
+    next += period_ns;
+
+Worthless, delete on sight:
+
+    // Increment next by period_ns
+    next += period_ns;
+
+# Banned outright
+
+- Restating the function signature in a docstring.
+- Section banners: `// ===== HELPERS =====`, `// --- Main Logic ---`.
+- Step narration: `// Step 1: initialize`, `// First, we parse the arguments`.
+- Hedging and filler: "Note that", "It's important to", "This ensures that",
+  "Here we", "We can now", "Simply".
+- Redundant type or param docs that just repeat the declaration.
+- Emoji, decorative ASCII, exclamation marks.
+- Any sentence addressed to a reader being taught, rather than a maintainer
+  being warned.
+
+# Style
+
+- Lowercase after `//` unless the sentence starts with an identifier or acronym.
+- One or two lines. If it needs a paragraph, it belongs in `NOTES.md` or
+  `docs/DESIGN.md` with a pointer from the code.
+- Prefer a measured number over an adjective.
+- Name the trap. If deleting a line would make the numbers look better and be
+  wrong, say so.
+- Comment density is low. Most lines need nothing.
+
+# Code
+
+- No defensive scaffolding nobody asked for: no logging framework, no config
+  layer, no abstract base class with one implementation, no `utils.h`.
+- Standard library plus POSIX on the C++ side. Ask before adding a dependency.
+- Short functions with concrete names. `drain_socket`, not `process_data`.
+- No try/catch in `src/`. Return status.
+
+# When you are unsure
+
+Leave the comment out. An absent comment costs nothing; a wrong or empty one
+costs the reader's trust in every other comment in the file.

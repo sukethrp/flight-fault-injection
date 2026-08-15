@@ -1,0 +1,35 @@
+---
+description: Analysis and plotting conventions
+globs: analysis/**/*.py
+alwaysApply: false
+---
+
+# Analysis conventions
+
+You have free rein here. Write, refactor, and test as needed. Dependencies are
+numpy and matplotlib only; ask before adding pandas, scipy, or seaborn.
+
+# Statistical honesty is enforced
+
+- A percentile needs roughly ten samples above it to mean anything. Do not
+  report p99.99 from fewer than 100,000 samples. Print `n/a` and warn on stderr
+  with how long a run would need to be, instead of printing a number.
+- Always report the sample count next to any percentile, in the table and in the
+  plot legend.
+- Latency and jitter distributions go on a log y-axis. A linear axis flattens
+  the tail, and the tail is the finding.
+- Every figure legend must state the configuration that actually applied, read
+  from the CSV comment header, not from the filename. If `scheduler_applied=0`,
+  the curve is labeled best effort and the script warns.
+- Never smooth, clip, or drop outliers. The outliers are the result.
+- Report max alongside percentiles. p99.99 with no max hides the worst case.
+
+# Conventions
+
+- Read the `#`-prefixed metadata block at the top of every CSV; that is the
+  provenance for the figure.
+- Emit the percentile table as markdown to stdout so it can be pasted straight
+  into the README. Figures and warnings go to stderr or to disk.
+- Scripts take explicit input paths and an `--out` path. No hardcoded filenames,
+  no globbing inside the script.
+- Deterministic output: same CSVs in, same numbers out. Seed anything random.

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Mechanical enforcement of the rules that .cursor/rules only advises.
+# Bypass: git commit --no-verify  (do it consciously, note it in NOTES.md)
+
+set -uo pipefail
+fail=0
+
+if [[ -n "${CURSOR_AGENT:-}" ]]; then
+    echo "pre-commit: refusing to commit from an agent shell."
+    echo "            run 'git diff --cached', read it, then commit yourself."
+    exit 1
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[[ -z "$staged" ]] && exit 0
+
+MAX=$((45 * 1024 * 1024))
+while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    sz=$(wc -c < "$f")
+    if (( sz > MAX )); then
+        echo "pre-commit: $f is $((sz / 1048576)) MB."
+        echo "            gzip it (one hour of samples goes 30 MB -> 9.6 MB) or leave it untracked."
+        fail=1
+    fi
+done <<< "$staged"
+
+while IFS= read -r f; do
+    if [[ "$f" == results/*.csv ]]; then
+        echo "pre-commit: $f is an uncompressed result. commit ${f}.gz instead."
+        fail=1
+    fi
+done <<< "$staged"
+
+BANNED='printf|std::cout|std::cerr|fprintf|malloc|calloc|realloc|free\(|[^_[:alnum:]]new[[:space:]]|push_back|emplace_back|std::string|std::function|lock_guard|unique_lock|std::mutex|throw[[:space:]]|std::vector<'
+
+while IFS= read -r f; do
+    [[ "$f" == src/* || "$f" == injector/* ]] || continue
+    [[ "$f" == *.cpp || "$f" == *.h ]] || continue
+    hits=$(git show ":$f" 2>/dev/null \
+        | awk '/HOT PATH BEGIN/{p=1;next} /HOT PATH END/{p=0} p{print NR": "$0}' \
+        | grep -nE "$BANNED" || true)
+    if [[ -n "$hits" ]]; then
+        echo "pre-commit: hot path violation in $f"
+        echo "$hits" | sed 's/^/            /'
+        echo "            see .cursor/rules/10-hot-path.mdc"
+        fail=1
+    fi
+done <<< "$staged"
+
+if [[ -d build ]] && command -v cmake >/dev/null 2>&1; then
+    if ! cmake --build build >/tmp/ffi_build.log 2>&1; then
+        echo "pre-commit: build failed. tail of /tmp/ffi_build.log:"
+        tail -15 /tmp/ffi_build.log | sed 's/^/            /'
+        fail=1
+    fi
+fi
+
+exit $fail
