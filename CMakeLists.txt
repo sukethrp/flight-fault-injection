@@ -9,6 +9,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+add_compile_options(-Wall -Wextra -Wpedantic)
+
 if(APPLE)
   message(STATUS "platform: darwin")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -18,8 +21,6 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
-
-add_compile_options(-O2 -Wall -Wextra -Wpedantic)
 
 add_library(rt_platform STATIC src/rt_platform.cpp)
 target_include_directories(rt_platform PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
