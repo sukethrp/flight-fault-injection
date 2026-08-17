@@ -3,6 +3,10 @@
 #if defined(__APPLE__)
 
 #include <mach/mach_time.h>
+#include <mach/thread_act.h>
+#include <mach/thread_policy.h>
+#include <pthread.h>
+#include <sys/mman.h>
 #include <time.h>
 
 namespace rt {
@@ -29,10 +33,42 @@ void sleep_until_ns(int64_t deadline_ns) {
     mach_wait_until(ns_to_ticks(deadline_ns));
 }
 
+RtStatus apply(const RtConfig& cfg) {
+    RtStatus st;
+
+    if (cfg.scheduler && cfg.period_ns > 0) {
+        thread_time_constraint_policy_data_t pol{};
+        pol.period = static_cast<uint32_t>(ns_to_ticks(cfg.period_ns));
+        // measured exec ~500 µs / 4 ms period in healthy.csv. 750 µs is 1.5x
+        // that (18.75% duty), not the whole period. preemptible=0: seq 3884 was preempted in busy_ns.
+        pol.computation = static_cast<uint32_t>(ns_to_ticks(750000));
+        pol.constraint  = static_cast<uint32_t>(ns_to_ticks(2000000));
+        pol.preemptible = 0;
+
+        const kern_return_t kr = thread_policy_set(
+            pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
+            reinterpret_cast<thread_policy_t>(&pol), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+        if (kr == KERN_SUCCESS) st.scheduler_applied = true;
+        else st.note += "THREAD_TIME_CONSTRAINT_POLICY rejected; ";
+    } else if (cfg.scheduler) {
+        st.note += "no period given, scheduler policy skipped; ";
+    }
+
+    if (cfg.lock_memory) {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) st.memory_locked = true;
+        else st.note += "mlockall denied (expected without root on macOS); ";
+    }
+
+    if (cfg.core >= 0) st.note += "core pinning unavailable on macOS; ";
+    return st;
+}
+
 }
 
 #elif defined(__linux__)
 
+#include <sched.h>
+#include <sys/mman.h>
 #include <errno.h>
 #include <time.h>
 
@@ -55,8 +91,43 @@ void sleep_until_ns(int64_t deadline_ns) {
     }
 }
 
+RtStatus apply(const RtConfig& cfg) {
+    RtStatus st;
+
+    if (cfg.scheduler) {
+        sched_param p{};
+        p.sched_priority = cfg.priority;
+        if (sched_setscheduler(0, SCHED_FIFO, &p) == 0) st.scheduler_applied = true;
+        else st.note += "SCHED_FIFO denied (needs root or CAP_SYS_NICE); ";
+    }
+
+    if (cfg.lock_memory) {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) st.memory_locked = true;
+        else st.note += "mlockall denied; ";
+    }
+
+    if (cfg.core >= 0) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cfg.core, &set);
+        if (sched_setaffinity(0, sizeof(set), &set) == 0) st.affinity_set = true;
+        else st.note += "affinity failed; ";
+    }
+    return st;
+}
+
 }
 
 #else
 #error unsupported platform
 #endif
+
+namespace rt {
+
+void prefault_stack(size_t bytes) {
+    volatile char buf[65536];
+    for (size_t i = 0; i < sizeof(buf); i += 4096) buf[i] = 0;
+    if (bytes > sizeof(buf)) prefault_stack(bytes - sizeof(buf));
+}
+
+}

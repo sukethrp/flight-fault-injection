@@ -13,6 +13,9 @@ struct Args {
     int         seconds = 60;
     int         warmup  = 2000;
     int         load_us = 0;
+    int         prio    = 80;
+    int         core    = -1;
+    bool        rt      = false;
     std::string label;
     std::string out = "results/loop.csv";
 };
@@ -28,6 +31,9 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--seconds") a.seconds = std::atoi(next());
         else if (f == "--warmup")  a.warmup  = std::atoi(next());
         else if (f == "--load-us") a.load_us = std::atoi(next());
+        else if (f == "--prio")    a.prio    = std::atoi(next());
+        else if (f == "--core")    a.core    = std::atoi(next());
+        else if (f == "--rt")      a.rt      = true;
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
         else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
@@ -55,6 +61,14 @@ int main(int argc, char** argv) {
     RingLog  log(total - a.warmup + 16);
     uint32_t overruns = 0;
     uint32_t rebases  = 0;
+
+    rt::RtConfig cfg;
+    cfg.priority  = a.prio;
+    cfg.core      = a.core;
+    cfg.period_ns = period_ns;
+    cfg.scheduler = a.rt;
+    const rt::RtStatus st = rt::apply(cfg);
+    rt::prefault_stack();
 
     int64_t next = rt::now_ns() + period_ns;
 
@@ -102,6 +116,10 @@ int main(int argc, char** argv) {
         "warmup_discarded=" + std::to_string(a.warmup),
         "overruns=" + std::to_string(overruns),
         "rebases=" + std::to_string(rebases),
+        "scheduler_applied=" + std::string(st.scheduler_applied ? "1" : "0"),
+        "memory_locked=" + std::string(st.memory_locked ? "1" : "0"),
+        "affinity_set=" + std::string(st.affinity_set ? "1" : "0"),
+        "note=" + st.note,
     };
 
     if (!log.write_csv(a.out, meta)) {

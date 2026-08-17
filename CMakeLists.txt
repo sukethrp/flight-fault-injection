@@ -24,6 +24,9 @@ find_package(Threads REQUIRED)
 
 add_library(rt_platform STATIC src/rt_platform.cpp)
 target_include_directories(rt_platform PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(rt_platform PRIVATE _GNU_SOURCE)
+endif()
 
 add_executable(loop_bench src/loop_bench.cpp)
 target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)

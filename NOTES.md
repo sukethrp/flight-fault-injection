@@ -99,3 +99,62 @@ future rather than spinning.
 rebase is `next + period <= now` a few nanoseconds later. Matching counts
 are the check; hundreds, or rebases without overruns, would mean the branch
 was too loose. Zero was the wrong target on darwin with no RT policy.
+
+## 2026-08-16 - THREAD_TIME_CONSTRAINT_POLICY vs baseline
+
+Same load as `results/healthy.csv`: 250 Hz, 20 s, warmup 500, load 500 µs,
+5000 samples. `results/healthy_rt.csv` header: `scheduler_applied=1`,
+`memory_locked=0`, `affinity_set=0`,
+`note=mlockall denied (expected without root on macOS);`
+
+Darwin `apply` claims: computation 750 µs, constraint 2 ms, preemptible 0.
+750 µs is 1.5x the ~500 µs exec in healthy.csv, not the 4000 µs period.
+preemptible 0 is seq 3884 (3947 µs exec after a 682 µs wake: descheduled
+inside `busy_ns`).
+
+Wake error, microseconds, comment-and-header lines skipped (NR>9 is wrong
+once `scheduler_applied` and friends lengthen the header; that path counted
+5004 rows in healthy_rt):
+
+| file | n | mean | p50 | p99 | p99.9 | max |
+|---|---|---|---|---|---|---|
+| `results/healthy.csv` | 5000 | 669 | 708 | 872 | 1880 | 5235 |
+| `results/healthy_rt.csv` | 5000 | 10 | 9 | 23 | 42 | 99 |
+
+p50 dropped 708 → 9, in line with the 928 µs timeshare drift figure. The
+tail moved with it on this run: max 5235 → 99, not a better typical with
+an unchanged millisecond worst case. 5000 samples supports p99 (~50 above
+it). p99.9 has five; p99.99 is not reportable. The 20 s window can miss
+the stall that healthy.csv caught at seq 2113. One hour in 1g is what
+makes those honest.
+
+`memory_locked=0` is mlockall without root, expected. The header recorded
+the denial instead of looking like a locked run.
+
+The 700 µs p50 was timer coalescing, not contention. macOS batches timer
+wakeups to hold deeper idle; a timeshare thread takes the full window.
+THREAD_TIME_CONSTRAINT_POLICY marks the thread real-time and exempts it.
+Same order as the drift experiment (928 µs average on timeshare
+`nanosleep`).
+
+Five alternating 20 s pairs (`results/ts_*.csv`, `results/rt_*.csv`),
+`grep -v '^#'` so the extra header lines cannot inflate n. `--rt` gates
+the Darwin policy; label alone does not. All ten headers: timeshare
+`scheduler_applied=0`, RT `scheduler_applied=1`, both `memory_locked=0`.
+
+| file | p50 | max |
+|---|---|---|
+| ts_1 | 707 | 38407 |
+| ts_2 | 707 | 18163 |
+| ts_3 | 707 | 14550 |
+| ts_4 | 706 | 21971 |
+| ts_5 | 707 | 14098 |
+| rt_1 | 10 | 73 |
+| rt_2 | 8 | 54 |
+| rt_3 | 11 | 87 |
+| rt_4 | 9 | 63 |
+| rt_5 | 9 | 67 |
+
+Timeshare p50 stays ~707 µs; max is 14–38 ms every run. RT p50 stays 8–11 µs;
+max stays 54–87 µs, never milliseconds. The seq 2113 stall is the timeshare
+coalescing tail, not a one-window fluke. Still 20 s each, not the 1g hour.
