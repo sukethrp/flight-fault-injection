@@ -50,3 +50,30 @@ about 7 minutes. Planning one hour per configuration for margin.
 **Environment.** clang 21, cmake via Homebrew, python 3.13. Commit hook installed
 from scripts/pre-commit: blocks agent-shell commits, oversized files,
 uncompressed result CSVs, and banned calls between the hot path sentinels.
+
+## 2026-08-16 - clock layer, measured drift
+
+Wrote `now_ns` and `sleep_until_ns` behind the platform layer. macOS uses
+`clock_gettime_nsec_np(CLOCK_UPTIME_RAW)` and `mach_wait_until`; Linux uses
+`clock_gettime(CLOCK_MONOTONIC)` and `clock_nanosleep(TIMER_ABSTIME)`. Mach
+ticks are not nanoseconds, so the timebase conversion goes through
+`mach_timebase_info`, cached once behind a function-local static.
+
+Measured on the M5, 250 Hz for 10 s, 2500 iterations:
+
+| approach | elapsed | drift |
+|---|---|---|
+| `nanosleep(period)` each iteration | 12.320 s | +2320 ms, 23.2% slow |
+| `mach_wait_until`, deadline advanced outside the sleep | 10.000 s | 0 ms |
+
+2320 ms over 2500 iterations is 928 us of wakeup latency per call. The loop
+asked for 250 Hz and delivered 203 Hz. macOS coalesces timer interrupts to save
+power and a default timeshare thread absorbs all of it. Reference point: the
+same test on a Linux VM drifted 3.9%, so this is a Darwin scheduling property,
+not a bug in the loop.
+
+The absolute version landing on 10.000 s does not mean the individual wakes were
+punctual. They are late by the same amount; the error just stops compounding
+because `next` advances from the previous deadline. Total elapsed hides per-tick
+error, which is why step 1c measures wake error per iteration instead of a
+stopwatch reading.
