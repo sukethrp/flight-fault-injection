@@ -77,3 +77,25 @@ punctual. They are late by the same amount; the error just stops compounding
 because `next` advances from the previous deadline. Total elapsed hides per-tick
 error, which is why step 1c measures wake error per iteration instead of a
 stopwatch reading.
+
+## 2026-08-16 - healthy run, three matching flags
+
+`results/healthy.csv`: darwin, 250 Hz, load 500 µs, warmup 500, 5000 samples.
+Header `overruns=3` `rebases=3`. Flagged rows (`flags==3` is both bits):
+
+| seq | wake_err_us | exec_us | flags |
+|---|---|---|---|
+| 2113 | 5234.75 | 500.00 | 3 |
+| 3884 | 682.12 | 3947.29 | 3 |
+| 4146 | 3155.12 | 1894.96 | 3 |
+
+Not three copies of a sleep stall. 2113 is: woke 5.2 ms late, then 500 µs of
+work. 3884 woke on time and was descheduled inside `busy_ns`. 4146 split the
+stall across the wait and the work. Neighbours on either side are ordinary
+(~600–850 µs wake, 500 µs exec, flags 0), so the rebase put `next` in the
+future rather than spinning.
+
+3/5000 is 0.06%. Same predicate family: overrun is `done > next + period`,
+rebase is `next + period <= now` a few nanoseconds later. Matching counts
+are the check; hundreds, or rebases without overruns, would mean the branch
+was too loose. Zero was the wrong target on darwin with no RT policy.
