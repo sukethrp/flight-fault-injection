@@ -24,14 +24,13 @@ find_package(Threads REQUIRED)
 
 add_library(rt_platform STATIC src/rt_platform.cpp src/udp_rx.cpp)
 target_include_directories(rt_platform PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(rt_platform SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mavlink")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(rt_platform PRIVATE _GNU_SOURCE)
 endif()
 
 add_executable(loop_bench src/loop_bench.cpp)
 target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)
-target_include_directories(loop_bench SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/c_library_v2")
 
 add_executable(udp_sender tools/udp_sender.cpp)
 target_link_libraries(udp_sender PRIVATE rt_platform)
-target_include_directories(udp_sender SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/c_library_v2")
