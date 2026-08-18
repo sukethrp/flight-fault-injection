@@ -158,3 +158,64 @@ the Darwin policy; label alone does not. All ten headers: timeshare
 Timeshare p50 stays ~707 µs; max is 14–38 ms every run. RT p50 stays 8–11 µs;
 max stays 54–87 µs, never milliseconds. The seq 2113 stall is the timeshare
 coalescing tail, not a one-window fluke. Still 20 s each, not the 1g hour.
+
+`analysis/percentiles.py` on those ten files (`results/table.md`): timeshare
+p99 880–1470 µs (1470 in `ts_1.csv`), RT p99 19–26 µs. p99.9 `n/a` at 5000
+samples. overruns 5–17 vs 0.
+
+`ns_to_ticks` now rounds up. Floor division put the mach deadline up to one
+tick (41.67 ns) early, which makes `wake_err` negative. 41 ns on a 4 ms
+period is 0.001%. Plot is log x and log y, first bin at 1 µs.
+
+CSV header now has `scheduler_requested` as well as `scheduler_applied`.
+The analysis warn fires only when requested=1 and applied=0.
+
+## 2026-08-18 - six alternating 600 s pairs
+
+Min wake_err_ns, `grep -v '^#'` then min of column 3:
+
+```
+results/hour_ts_1.csv min: 5875
+results/hour_rt_1.csv min: 1708
+```
+
+Neither is negative. Ceiling `ns_to_ticks` is `(ns * denom + numer - 1) / numer` so the tick deadline is never before the requested nanosecond.
+
+Twelve runs, 150000 samples each. p50/max from `analysis/percentiles.py` on `results/hour_ts_*.csv` and `results/hour_rt_*.csv`. overruns from each file's `# overruns=` line.
+
+| file | p50 | p99.99 | max | overruns |
+|---|---|---|---|---|
+| hour_ts_1 | 707 | 10815 | 22044 | 115 |
+| hour_ts_2 | 708 | 7747 | 35696 | 86 |
+| hour_ts_3 | 708 | 7174 | 24612 | 89 |
+| hour_ts_4 | 707 | 9047 | 38992 | 132 |
+| hour_ts_5 | 708 | 8776 | 39127 | 95 |
+| hour_ts_6 | 707 | 7571 | 19957 | 96 |
+| hour_rt_1 | 10 | 88 | 126 | 0 |
+| hour_rt_2 | 10 | 86 | 151 | 0 |
+| hour_rt_3 | 10 | 87 | 225 | 0 |
+| hour_rt_4 | 10 | 91 | 173 | 0 |
+| hour_rt_5 | 9 | 107 | 187 | 0 |
+| hour_rt_6 | 9 | 108 | 194 | 0 |
+
+Timeshare p50 is 707–708 µs on every run. RT p50 is 9–10 µs. That is two hours of wall clock (six 600 s pairs, alternating) with 1 µs of p50 drift. Pooled in `results/pooled.md`: n=900000, timeshare p50=707 p99.99=8522 max=39127; RT p50=10 p99.99=95 max=225.
+
+Timeshare overruns 115+86+89+132+95+96 = 613. 613/900000 = 0.068%. RT overruns 0.
+
+The 707 µs p50 is consistent with timer coalescing on a roughly 1 ms grid, not
+directly measured. A 1 ms grid would be roughly uniform on [0, 1000) with p50
+near 500; the measured p50 is 707 with mean 665, which is skewed. Plot is log x
+and log y, first bin at 1 µs (`results/jitter.png`).
+
+Rate sweep, timeshare, 60 s, load 200 µs (`results/rates.md`):
+
+| hz | period_us | n | p50 | mean |
+|---|---|---|---|---|
+| 100 | 10000 | 6000 | 1883 | 1600 |
+| 250 | 4000 | 15000 | 767 | 715 |
+| 500 | 2000 | 30000 | 367 | 375 |
+| 1000 | 1000 | 60000 | 166 | 180 |
+
+p50 scales with the period (about 0.17–0.19 of it), so it is not a fixed 1 ms
+coalescing window. THREAD_TIME_CONSTRAINT_POLICY still steps off that timeshare
+body to 9–10 µs at 250 Hz in the 600 s campaign.

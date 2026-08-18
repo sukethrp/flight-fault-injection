@@ -14,8 +14,8 @@ struct RtConfig {
     int     priority    = 80;   // SCHED_FIFO priority, Linux only
     int     core        = -1;   // -1 means do not pin
     int64_t period_ns   = 0;    // required by the Darwin time-constraint policy
-    bool    lock_memory = true;
-    bool    scheduler   = false;
+    bool    lock_memory          = true;
+    bool    scheduler_requested  = false;
 };
 
 // What actually stuck. Goes in the CSV header so a figure can never claim a

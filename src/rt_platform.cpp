@@ -26,7 +26,9 @@ static uint64_t ns_to_ticks(int64_t ns) {
         mach_timebase_info(&t);
         return t;
     }();
-    return static_cast<uint64_t>(ns) * tb.denom / tb.numer;
+    // round up. truncating down puts the tick deadline up to 41 ns before the
+    // requested nanosecond, so wake_err can go slightly negative.
+    return (static_cast<uint64_t>(ns) * tb.denom + tb.numer - 1) / tb.numer;
 }
 
 void sleep_until_ns(int64_t deadline_ns) {
@@ -36,7 +38,7 @@ void sleep_until_ns(int64_t deadline_ns) {
 RtStatus apply(const RtConfig& cfg) {
     RtStatus st;
 
-    if (cfg.scheduler && cfg.period_ns > 0) {
+    if (cfg.scheduler_requested && cfg.period_ns > 0) {
         thread_time_constraint_policy_data_t pol{};
         pol.period = static_cast<uint32_t>(ns_to_ticks(cfg.period_ns));
         // measured exec ~500 µs / 4 ms period in healthy.csv. 750 µs is 1.5x
@@ -50,7 +52,7 @@ RtStatus apply(const RtConfig& cfg) {
             reinterpret_cast<thread_policy_t>(&pol), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
         if (kr == KERN_SUCCESS) st.scheduler_applied = true;
         else st.note += "THREAD_TIME_CONSTRAINT_POLICY rejected; ";
-    } else if (cfg.scheduler) {
+    } else if (cfg.scheduler_requested) {
         st.note += "no period given, scheduler policy skipped; ";
     }
 
@@ -94,7 +96,7 @@ void sleep_until_ns(int64_t deadline_ns) {
 RtStatus apply(const RtConfig& cfg) {
     RtStatus st;
 
-    if (cfg.scheduler) {
+    if (cfg.scheduler_requested) {
         sched_param p{};
         p.sched_priority = cfg.priority;
         if (sched_setscheduler(0, SCHED_FIFO, &p) == 0) st.scheduler_applied = true;
@@ -128,6 +130,9 @@ void prefault_stack(size_t bytes) {
     volatile char buf[65536];
     for (size_t i = 0; i < sizeof(buf); i += 4096) buf[i] = 0;
     if (bytes > sizeof(buf)) prefault_stack(bytes - sizeof(buf));
+    // keep this frame live. clang -O2 otherwise emits `b prefault_stack`
+    // and only the first 64 KB is ever dirtied.
+    buf[0] = 0;
 }
 
 }

@@ -63,10 +63,10 @@ int main(int argc, char** argv) {
     uint32_t rebases  = 0;
 
     rt::RtConfig cfg;
-    cfg.priority  = a.prio;
-    cfg.core      = a.core;
-    cfg.period_ns = period_ns;
-    cfg.scheduler = a.rt;
+    cfg.priority             = a.prio;
+    cfg.core                 = a.core;
+    cfg.period_ns            = period_ns;
+    cfg.scheduler_requested  = a.rt;
     const rt::RtStatus st = rt::apply(cfg);
     rt::prefault_stack();
 
@@ -116,6 +116,7 @@ int main(int argc, char** argv) {
         "warmup_discarded=" + std::to_string(a.warmup),
         "overruns=" + std::to_string(overruns),
         "rebases=" + std::to_string(rebases),
+        "scheduler_requested=" + std::string(cfg.scheduler_requested ? "1" : "0"),
         "scheduler_applied=" + std::string(st.scheduler_applied ? "1" : "0"),
         "memory_locked=" + std::string(st.memory_locked ? "1" : "0"),
         "affinity_set=" + std::string(st.affinity_set ? "1" : "0"),

@@ -18,19 +18,25 @@ mean not measured yet, never estimated.
 
 Wake-up error in microseconds, 250 Hz loop. Identical application code in
 every row; the kernel and its scheduling policy are the only variable. Empty
-cells are not measured yet. macOS rows are 20 s / 5000 samples from
-`results/healthy.csv` and `results/healthy_rt.csv`. p99.9 and p99.99 stay
-blank until there are enough samples above the quantile (p99.99 needs ~100,000).
+cells are not measured yet. macOS rows are six alternating 600-second runs
+pooled (`results/hour_ts_1.csv`–`hour_ts_6.csv`,
+`results/hour_rt_1.csv`–`hour_rt_6.csv`; percentiles in `results/pooled.md`).
+900,000 samples per configuration. Overruns are the sum of the `overruns=`
+header fields on those twelve files.
 
 | Configuration | Samples | p50 | p99 | p99.9 | p99.99 | max | overruns |
 |---|---|---|---|---|---|---|---|
-| macOS, best effort | 5000 | 708 | 872 | | | 5235 | 3 |
-| macOS, THREAD_TIME_CONSTRAINT_POLICY | 5000 | 9 | 23 | | | 99 | 0 |
+| macOS, best effort | 900000 | 707 | 880 | 2028 | 8522 | 39127 | 613 |
+| macOS, THREAD_TIME_CONSTRAINT_POLICY | 900000 | 10 | 24 | 42 | 95 | 225 | 0 |
 | Linux, CFS | | | | | | | |
 | Linux, PREEMPT_RT, SCHED_FIFO, isolated core | | | | | | | |
 
 `cyclictest` on the same machine gives the platform floor, plotted as a
 reference line alongside these curves.
+
+![Wake-error histogram](results/jitter.png)
+
+Log x and log y. First bin starts at 1 µs; smaller samples sit there.
 
 ## Fault table
 

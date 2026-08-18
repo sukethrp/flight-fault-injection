@@ -1,0 +1,25 @@
+=== pair 1 timeshare 11:54:52 ===
+results/hour_ts_1.csv: 150000 samples, 115 overruns, 115 rebases
+=== pair 1 rt 12:05:01 ===
+results/hour_rt_1.csv: 150000 samples, 0 overruns, 0 rebases
+=== pair 2 timeshare 12:15:09 ===
+results/hour_ts_2.csv: 150000 samples, 86 overruns, 86 rebases
+=== pair 2 rt 12:25:18 ===
+results/hour_rt_2.csv: 150000 samples, 0 overruns, 0 rebases
+=== pair 3 timeshare 12:35:26 ===
+results/hour_ts_3.csv: 150000 samples, 89 overruns, 89 rebases
+=== pair 3 rt 12:45:35 ===
+results/hour_rt_3.csv: 150000 samples, 0 overruns, 0 rebases
+=== pair 4 timeshare 12:55:43 ===
+results/hour_ts_4.csv: 150000 samples, 132 overruns, 132 rebases
+=== pair 4 rt 13:05:51 ===
+results/hour_rt_4.csv: 150000 samples, 0 overruns, 0 rebases
+=== pair 5 timeshare 13:16:00 ===
+results/hour_ts_5.csv: 150000 samples, 95 overruns, 95 rebases
+=== pair 5 rt 13:26:08 ===
+results/hour_rt_5.csv: 150000 samples, 0 overruns, 0 rebases
+=== pair 6 timeshare 13:36:16 ===
+results/hour_ts_6.csv: 150000 samples, 96 overruns, 96 rebases
+=== pair 6 rt 13:46:25 ===
+results/hour_rt_6.csv: 150000 samples, 0 overruns, 0 rebases
+=== done 13:56:33 ===
