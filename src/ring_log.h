@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+constexpr int32_t kSkewNone = INT32_MIN;  // no IMU this tick; not a skew sample
+
 // One row per loop iteration. POD, small, written from inside the hot loop.
 struct Sample {
     int64_t  deadline_ns;
@@ -13,6 +15,7 @@ struct Sample {
     uint32_t flags;
     uint16_t rx_count;      // datagrams drained this tick. 0 with no socket.
     uint16_t seq_gaps;      // missing MAVLink seq numbers this tick. wrapping uint8_t.
+    int32_t  skew_ns;       // sender_us*1000 - rx_mono_ns. detector uses the slope; PX4 offset is arbitrary. kSkewNone if silent.
 };
 
 // Wake error and budget violations are different failure modes. A 50 ms stall
@@ -39,13 +42,13 @@ class RingLog {
         FILE* f = std::fopen(path.c_str(), "w");
         if (!f) return false;
         for (const auto& m : meta) std::fprintf(f, "# %s\n", m.c_str());
-        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,flags,rx_count,seq_gaps\n");
+        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,flags,rx_count,seq_gaps,skew_ns\n");
         for (size_t i = 0; i < n_; ++i) {
             const Sample& s = buf_[i];
-            std::fprintf(f, "%u,%lld,%d,%d,%u,%u,%u\n", s.seq,
+            std::fprintf(f, "%u,%lld,%d,%d,%u,%u,%u,%d\n", s.seq,
                          static_cast<long long>(s.deadline_ns), s.wake_err_ns,
                          s.exec_ns, s.flags, static_cast<unsigned>(s.rx_count),
-                         static_cast<unsigned>(s.seq_gaps));
+                         static_cast<unsigned>(s.seq_gaps), s.skew_ns);
         }
         std::fclose(f);
         return true;

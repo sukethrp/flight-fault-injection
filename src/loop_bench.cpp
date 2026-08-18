@@ -1,8 +1,7 @@
+#include "msg_slots.h"
 #include "ring_log.h"
 #include "rt_platform.h"
 #include "udp_rx.h"
-
-#include "common/mavlink.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -88,8 +87,7 @@ int main(int argc, char** argv) {
     // straddled two recv bursts.
     mavlink_message_t mav_msg{};
     mavlink_status_t  mav_status{};
-    uint8_t last_seq = 0;
-    bool    have_seq = false;
+    MsgSlots slots{};
     int sock = -1;
     if (a.port > 0) {
         sock = udp_bind_nonblocking(a.port);
@@ -121,13 +119,26 @@ int main(int argc, char** argv) {
                             static_cast<uint8_t>(rxbuf[b]),
                             &mav_msg, &mav_status)) {
                         ++parsed;
-                        if (have_seq) {
-                            // seq is uint8_t; unsigned wrap makes 255->0 a zero gap.
-                            gaps = static_cast<uint16_t>(
-                                gaps + static_cast<uint8_t>(mav_msg.seq - last_seq - 1));
+                        switch (mav_msg.msgid) {
+                        case MAVLINK_MSG_ID_HIGHRES_IMU: {
+                            ImuSlot& imu = slots.imu;
+                            if (imu.valid) {
+                                // seq is uint8_t; without the mask, 255->0 is -256 not 0.
+                                const uint8_t g = static_cast<uint8_t>(
+                                    (mav_msg.seq - imu.last_seq - 1) & 0xFF);
+                                imu.seq_gaps += g;
+                                gaps = static_cast<uint16_t>(gaps + g);
+                            }
+                            mavlink_msg_highres_imu_decode(&mav_msg, &imu.payload);
+                            imu.rx_mono_ns = woke;
+                            imu.sender_us  = imu.payload.time_usec;
+                            imu.last_seq   = mav_msg.seq;
+                            imu.valid      = true;
+                            break;
                         }
-                        last_seq = mav_msg.seq;
-                        have_seq = true;
+                        default:
+                            break;
+                        }
                     }
                 }
             }
@@ -144,6 +155,11 @@ int main(int argc, char** argv) {
         s.seq         = static_cast<uint32_t>(i);
         s.rx_count    = rx;
         s.seq_gaps    = gaps;
+        s.skew_ns     = kSkewNone;
+        if (slots.imu.valid && slots.imu.rx_mono_ns == woke) {
+            s.skew_ns = static_cast<int32_t>(
+                static_cast<int64_t>(slots.imu.sender_us * 1000ull) - slots.imu.rx_mono_ns);
+        }
         if (done > next + period_ns) { s.flags |= FLAG_OVERRUN; }
         if (rx == kMaxMsgsPerTick)   { s.flags |= FLAG_DRAIN_FULL; }
 
