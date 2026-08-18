@@ -21,7 +21,6 @@ struct Args {
     int         core    = -1;
     int         port    = 0;
     bool        rt      = false;
-    bool        mavparse = false;
     std::string label;
     std::string out = "results/loop.csv";
 };
@@ -47,7 +46,6 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
         else if (f == "--port")    a.port     = std::atoi(next());
-        else if (f == "--parse")   a.mavparse = true;
         else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
     }
     return a.hz > 0 && a.seconds > 0;
@@ -76,6 +74,7 @@ int main(int argc, char** argv) {
     uint32_t rx_total    = 0;
     uint32_t drain_fulls = 0;
     uint32_t parse_ok    = 0;
+    uint32_t seq_gaps    = 0;
 
     rt::RtConfig cfg;
     cfg.priority             = a.prio;
@@ -85,9 +84,12 @@ int main(int argc, char** argv) {
     const rt::RtStatus st = rt::apply(cfg);
 
     char rxbuf[512]{};
+    // parser state spans ticks. a per-iteration {} drops a frame that
+    // straddled two recv bursts.
     mavlink_message_t mav_msg{};
     mavlink_status_t  mav_status{};
-    const bool mavparse = a.mavparse;
+    uint8_t last_seq = 0;
+    bool    have_seq = false;
     int sock = -1;
     if (a.port > 0) {
         sock = udp_bind_nonblocking(a.port);
@@ -108,20 +110,24 @@ int main(int argc, char** argv) {
 
         uint16_t rx = 0;
         uint16_t parsed = 0;
+        uint16_t gaps = 0;
         if (sock >= 0) {
             while (rx < kMaxMsgsPerTick) {
                 const long n = udp_try_recv(sock, rxbuf, sizeof(rxbuf));
                 if (n <= 0) break;
                 ++rx;
-                if (mavparse) {
-                    // generated parser is a byte state machine: a 75-byte
-                    // HIGHRES_IMU is 75 calls. that is the 2b cost.
-                    for (long b = 0; b < n; ++b) {
-                        if (mavlink_parse_char(MAVLINK_COMM_0,
-                                static_cast<uint8_t>(rxbuf[b]),
-                                &mav_msg, &mav_status)) {
-                            ++parsed;
+                for (long b = 0; b < n; ++b) {
+                    if (mavlink_parse_char(MAVLINK_COMM_0,
+                            static_cast<uint8_t>(rxbuf[b]),
+                            &mav_msg, &mav_status)) {
+                        ++parsed;
+                        if (have_seq) {
+                            // seq is uint8_t; unsigned wrap makes 255->0 a zero gap.
+                            gaps = static_cast<uint16_t>(
+                                gaps + static_cast<uint8_t>(mav_msg.seq - last_seq - 1));
                         }
+                        last_seq = mav_msg.seq;
+                        have_seq = true;
                     }
                 }
             }
@@ -137,6 +143,7 @@ int main(int argc, char** argv) {
         s.exec_ns     = static_cast<int32_t>(done - woke);
         s.seq         = static_cast<uint32_t>(i);
         s.rx_count    = rx;
+        s.seq_gaps    = gaps;
         if (done > next + period_ns) { s.flags |= FLAG_OVERRUN; }
         if (rx == kMaxMsgsPerTick)   { s.flags |= FLAG_DRAIN_FULL; }
 
@@ -157,6 +164,7 @@ int main(int argc, char** argv) {
             if (s.flags & FLAG_DRAIN_FULL) ++drain_fulls;
             rx_total += rx;
             parse_ok += parsed;
+            seq_gaps += gaps;
             log.push(s);
         }
     }
@@ -177,8 +185,9 @@ int main(int argc, char** argv) {
         "rebases=" + std::to_string(rebases),
         "rx_total=" + std::to_string(rx_total),
         "drain_full=" + std::to_string(drain_fulls),
-        "parse=" + std::string(mavparse ? "1" : "0"),
+        "parse=" + std::string(a.port > 0 ? "1" : "0"),
         "parse_ok=" + std::to_string(parse_ok),
+        "seq_gaps=" + std::to_string(seq_gaps),
         "computation_ns=" + std::to_string(st.computation_ns),
         "scheduler_requested=" + std::string(cfg.scheduler_requested ? "1" : "0"),
         "scheduler_applied=" + std::string(st.scheduler_applied ? "1" : "0"),
@@ -192,7 +201,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr,
-                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok\n",
-                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok);
+                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps\n",
+                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps);
     return 0;
 }

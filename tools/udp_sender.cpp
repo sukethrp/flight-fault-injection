@@ -34,9 +34,11 @@ int main(int argc, char** argv) {
     uint16_t frame_len = 0;
     for (int64_t i = 0; i < total; ++i) {
         rt::sleep_until_ns(next);
+        // id is the last payload byte. v2 trims trailing zeros, so id=0
+        // encodes 32 bytes instead of the 75 PX4 sends.
         mavlink_msg_highres_imu_pack(
             1, 1, &msg,
-            static_cast<uint64_t>(i),
+            static_cast<uint64_t>(rt::now_ns() / 1000),
             0.01f, -0.02f, 9.81f,
             0.001f, -0.002f, 0.003f,
             0.21f, 0.02f, 0.41f,
