@@ -43,15 +43,20 @@ RtStatus apply(const RtConfig& cfg) {
         pol.period = static_cast<uint32_t>(ns_to_ticks(cfg.period_ns));
         // measured exec ~500 µs / 4 ms period in healthy.csv. 750 µs is 1.5x
         // that (18.75% duty), not the whole period. preemptible=0: seq 3884 was preempted in busy_ns.
-        pol.computation = static_cast<uint32_t>(ns_to_ticks(750000));
+        constexpr int64_t kComputationNs = 750000;
+        pol.computation = static_cast<uint32_t>(ns_to_ticks(kComputationNs));
         pol.constraint  = static_cast<uint32_t>(ns_to_ticks(2000000));
         pol.preemptible = 0;
 
         const kern_return_t kr = thread_policy_set(
             pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
             reinterpret_cast<thread_policy_t>(&pol), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
-        if (kr == KERN_SUCCESS) st.scheduler_applied = true;
-        else st.note += "THREAD_TIME_CONSTRAINT_POLICY rejected; ";
+        if (kr == KERN_SUCCESS) {
+            st.scheduler_applied = true;
+            st.computation_ns    = kComputationNs;
+        } else {
+            st.note += "THREAD_TIME_CONSTRAINT_POLICY rejected; ";
+        }
     } else if (cfg.scheduler_requested) {
         st.note += "no period given, scheduler policy skipped; ";
     }

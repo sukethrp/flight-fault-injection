@@ -11,14 +11,16 @@ struct Sample {
     int32_t  exec_ns;       // how long the work in this period took
     uint32_t seq;
     uint32_t flags;
+    uint16_t rx_count;      // datagrams drained this tick. 0 with no socket.
 };
 
 // Wake error and budget violations are different failure modes. A 50 ms stall
 // followed by a rebase leaves no trace in wake_err at all, so the flags are the
 // only record that it happened.
 enum : uint32_t {
-    FLAG_OVERRUN = 1u << 0,  // work ran past the following deadline
-    FLAG_REBASED = 1u << 1,  // deadline skipped forward, periods were dropped
+    FLAG_OVERRUN    = 1u << 0,  // work ran past the following deadline
+    FLAG_REBASED    = 1u << 1,  // deadline skipped forward, periods were dropped
+    FLAG_DRAIN_FULL = 1u << 2,  // recv hit its per-tick bound; leftover or bound too tight
 };
 
 // Fixed capacity. No allocation, no locks, no I/O in push().
@@ -36,12 +38,12 @@ class RingLog {
         FILE* f = std::fopen(path.c_str(), "w");
         if (!f) return false;
         for (const auto& m : meta) std::fprintf(f, "# %s\n", m.c_str());
-        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,flags\n");
+        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,flags,rx_count\n");
         for (size_t i = 0; i < n_; ++i) {
             const Sample& s = buf_[i];
-            std::fprintf(f, "%u,%lld,%d,%d,%u\n", s.seq,
+            std::fprintf(f, "%u,%lld,%d,%d,%u,%u\n", s.seq,
                          static_cast<long long>(s.deadline_ns), s.wake_err_ns,
-                         s.exec_ns, s.flags);
+                         s.exec_ns, s.flags, static_cast<unsigned>(s.rx_count));
         }
         std::fclose(f);
         return true;

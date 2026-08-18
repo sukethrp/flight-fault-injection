@@ -1,9 +1,13 @@
 #include "ring_log.h"
 #include "rt_platform.h"
+#include "udp_rx.h"
+
+#include "common/mavlink.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -15,10 +19,16 @@ struct Args {
     int         load_us = 0;
     int         prio    = 80;
     int         core    = -1;
+    int         port    = 0;
     bool        rt      = false;
+    bool        mavparse = false;
     std::string label;
     std::string out = "results/loop.csv";
 };
+
+// 400 Hz sender / 250 Hz loop = 1.6 datagrams per tick. 8 is 5× that mean,
+// enough to absorb a 20 ms burst (400 × 0.020) without an unbounded recv.
+constexpr uint16_t kMaxMsgsPerTick = 8;
 
 bool parse(int argc, char** argv, Args& a) {
     for (int i = 1; i < argc; ++i) {
@@ -36,6 +46,8 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--rt")      a.rt      = true;
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
+        else if (f == "--port")    a.port     = std::atoi(next());
+        else if (f == "--parse")   a.mavparse = true;
         else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
     }
     return a.hz > 0 && a.seconds > 0;
@@ -59,8 +71,11 @@ int main(int argc, char** argv) {
     const size_t  total     = static_cast<size_t>(a.hz) * a.seconds + a.warmup;
 
     RingLog  log(total - a.warmup + 16);
-    uint32_t overruns = 0;
-    uint32_t rebases  = 0;
+    uint32_t overruns    = 0;
+    uint32_t rebases     = 0;
+    uint32_t rx_total    = 0;
+    uint32_t drain_fulls = 0;
+    uint32_t parse_ok    = 0;
 
     rt::RtConfig cfg;
     cfg.priority             = a.prio;
@@ -68,6 +83,20 @@ int main(int argc, char** argv) {
     cfg.period_ns            = period_ns;
     cfg.scheduler_requested  = a.rt;
     const rt::RtStatus st = rt::apply(cfg);
+
+    char rxbuf[512]{};
+    mavlink_message_t mav_msg{};
+    mavlink_status_t  mav_status{};
+    const bool mavparse = a.mavparse;
+    int sock = -1;
+    if (a.port > 0) {
+        sock = udp_bind_nonblocking(a.port);
+        if (sock < 0) {
+            std::fprintf(stderr, "could not bind UDP %d\n", a.port);
+            return 1;
+        }
+    }
+
     rt::prefault_stack();
 
     int64_t next = rt::now_ns() + period_ns;
@@ -76,6 +105,27 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < total; ++i) {
         rt::sleep_until_ns(next);
         const int64_t woke = rt::now_ns();
+
+        uint16_t rx = 0;
+        uint16_t parsed = 0;
+        if (sock >= 0) {
+            while (rx < kMaxMsgsPerTick) {
+                const long n = udp_try_recv(sock, rxbuf, sizeof(rxbuf));
+                if (n <= 0) break;
+                ++rx;
+                if (mavparse) {
+                    // generated parser is a byte state machine: a 75-byte
+                    // HIGHRES_IMU is 75 calls. that is the 2b cost.
+                    for (long b = 0; b < n; ++b) {
+                        if (mavlink_parse_char(MAVLINK_COMM_0,
+                                static_cast<uint8_t>(rxbuf[b]),
+                                &mav_msg, &mav_status)) {
+                            ++parsed;
+                        }
+                    }
+                }
+            }
+        }
 
         busy_ns(load_ns);
 
@@ -86,7 +136,9 @@ int main(int argc, char** argv) {
         s.wake_err_ns = static_cast<int32_t>(woke - next);
         s.exec_ns     = static_cast<int32_t>(done - woke);
         s.seq         = static_cast<uint32_t>(i);
+        s.rx_count    = rx;
         if (done > next + period_ns) { s.flags |= FLAG_OVERRUN; }
+        if (rx == kMaxMsgsPerTick)   { s.flags |= FLAG_DRAIN_FULL; }
 
         next += period_ns;
 
@@ -100,12 +152,17 @@ int main(int argc, char** argv) {
         }
 
         if (i >= static_cast<size_t>(a.warmup)) {
-            if (s.flags & FLAG_OVERRUN) ++overruns;
-            if (s.flags & FLAG_REBASED) ++rebases;
+            if (s.flags & FLAG_OVERRUN)    ++overruns;
+            if (s.flags & FLAG_REBASED)    ++rebases;
+            if (s.flags & FLAG_DRAIN_FULL) ++drain_fulls;
+            rx_total += rx;
+            parse_ok += parsed;
             log.push(s);
         }
     }
     // HOT PATH END
+
+    if (sock >= 0) close(sock);
 
     const std::vector<std::string> meta = {
         std::string("platform=") + rt::platform_name(),
@@ -114,8 +171,15 @@ int main(int argc, char** argv) {
         "period_ns=" + std::to_string(period_ns),
         "load_us=" + std::to_string(a.load_us),
         "warmup_discarded=" + std::to_string(a.warmup),
+        "port=" + std::to_string(a.port),
+        "max_msgs_per_tick=" + std::to_string(kMaxMsgsPerTick),
         "overruns=" + std::to_string(overruns),
         "rebases=" + std::to_string(rebases),
+        "rx_total=" + std::to_string(rx_total),
+        "drain_full=" + std::to_string(drain_fulls),
+        "parse=" + std::string(mavparse ? "1" : "0"),
+        "parse_ok=" + std::to_string(parse_ok),
+        "computation_ns=" + std::to_string(st.computation_ns),
         "scheduler_requested=" + std::string(cfg.scheduler_requested ? "1" : "0"),
         "scheduler_applied=" + std::string(st.scheduler_applied ? "1" : "0"),
         "memory_locked=" + std::string(st.memory_locked ? "1" : "0"),
@@ -127,7 +191,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "could not write %s\n", a.out.c_str());
         return 1;
     }
-    std::fprintf(stderr, "%s: %zu samples, %u overruns, %u rebases\n", a.out.c_str(),
-                 log.size(), overruns, rebases);
+    std::fprintf(stderr,
+                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok\n",
+                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok);
     return 0;
 }

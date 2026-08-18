@@ -202,20 +202,102 @@ Timeshare p50 is 707–708 µs on every run. RT p50 is 9–10 µs. That is two h
 
 Timeshare overruns 115+86+89+132+95+96 = 613. 613/900000 = 0.068%. RT overruns 0.
 
-The 707 µs p50 is consistent with timer coalescing on a roughly 1 ms grid, not
-directly measured. A 1 ms grid would be roughly uniform on [0, 1000) with p50
-near 500; the measured p50 is 707 with mean 665, which is skewed. Plot is log x
-and log y, first bin at 1 µs (`results/jitter.png`).
+Darwin applies timer leeway as a fraction of the requested interval, not as a
+constant. Hour-campaign p50 707 / 4000 µs period = 0.177. Rate sweep, timeshare,
+60 s, load 200 µs (`results/rates.md`):
 
-Rate sweep, timeshare, 60 s, load 200 µs (`results/rates.md`):
+| hz | period_us | n | p50 | mean | p50/period |
+|---|---|---|---|---|---|
+| 100 | 10000 | 6000 | 1883 | 1600 | 0.188 |
+| 250 | 4000 | 15000 | 767 | 715 | 0.192 |
+| 500 | 2000 | 30000 | 367 | 375 | 0.184 |
+| 1000 | 1000 | 60000 | 166 | 180 | 0.166 |
 
-| hz | period_us | n | p50 | mean |
-|---|---|---|---|---|
-| 100 | 10000 | 6000 | 1883 | 1600 |
-| 250 | 4000 | 15000 | 767 | 715 |
-| 500 | 2000 | 30000 | 367 | 375 |
-| 1000 | 1000 | 60000 | 166 | 180 |
+p50/period stays 0.17–0.19 across a 10× range in period, so the coefficient is
+about 0.18. A fixed 1 ms coalescing window is ruled out: that would be 0.10 of
+a 10 ms period and 1.0 of a 1 ms period. Plot is log x and log y, first bin at
+1 µs (`results/jitter.png`).
 
-p50 scales with the period (about 0.17–0.19 of it), so it is not a fixed 1 ms
-coalescing window. THREAD_TIME_CONSTRAINT_POLICY still steps off that timeshare
-body to 9–10 µs at 250 Hz in the 600 s campaign.
+THREAD_TIME_CONSTRAINT_POLICY steps off that timeshare body to 9–10 µs at
+250 Hz in the 600 s campaign.
+
+RT rate sweep, same 60 s / load 200 µs, `--rt` (`results/rates_rt.md`). All
+four headers: `scheduler_applied=1`, `computation_ns=750000`.
+
+| hz | period_us | n | RT p50 | RT p50/period | timeshare p50 | timeshare p50/period |
+|---|---|---|---|---|---|---|
+| 100 | 10000 | 6000 | 12 | 0.0012 | 1883 | 0.188 |
+| 250 | 4000 | 15000 | 10 | 0.0025 | 767 | 0.192 |
+| 500 | 2000 | 30000 | 8 | 0.0040 | 367 | 0.184 |
+| 1000 | 1000 | 60000 | 8 | 0.0080 | 166 | 0.166 |
+
+p50 stays 8–12 µs across a 10× rate range. The RT floor is absolute, not
+the 0.18 fraction timeshare uses. The relative benefit shrinks as you go
+faster: at 250 Hz, 10 µs is 0.25% of the period against 19% timeshare; at
+1000 Hz, 8 µs is 0.80% against 17%. 250 Hz was a conservative choice for
+the histogram, not a lucky one: the policy buys a fixed floor, and a
+slower loop spends less of its period on it.
+
+## 2026-08-18 - 2a, socket before PX4
+
+Reordered Phase 2 in `docs/DESIGN.md`: dummy UDP sender, then drain, then
+PX4 as a drop-in. PX4 on Apple Silicon is the same class of toolchain wall
+as epuck on this machine; putting it first would have blocked the
+measurement 2a actually asks.
+
+Bound is `kMaxMsgsPerTick = 8`. 400 Hz sender / 250 Hz loop is 1.6 datagrams
+per tick; 8 is 5× that, equal to 20 ms of sender burst (400 × 0.020). Phase 1
+RT max wake was 225 µs, which is not even one extra IMU frame, so under the
+same policy the bound should almost never fire because the *loop* is late.
+
+`results/p2.md`, 600 s, 150000 samples, `--rt`, load 500 µs. Headers:
+`scheduler_applied=1` on both. Sender `results/p2_sender.err`: 264000 frames
+(400 × 660).
+
+| configuration | n | mean | p50 | p99 | p99.9 | p99.99 | max | rx_total | drain_full |
+|---|---|---|---|---|---|---|---|---|---|
+| rt-nosocket | 150000 | 9 | 8 | 22 | 40 | 77 | 343 | 0 | 0 |
+| rt-socket | 150000 | 8 | 7 | 20 | 34 | 79 | 536 | 240000 | 36 |
+
+240000 / 150000 = 1.6, the 400/250 ratio, and 400 × 600 s. Wake p50 8 → 7,
+p99.99 77 → 79. The histogram did not move. max 343 → 536 is one sample.
+
+The cost is in `exec_ns`: p50 500.0 → 511.3 µs. Drain plus one empty `recv`
+is about 11 µs, well inside the Darwin computation claim of 750 µs. That
+claim is now `computation_ns` in the CSV header; the analysis warns if exec
+p50 crosses 80% of it, because macOS can demote the thread with
+`scheduler_applied=1` still sitting from startup. The p2 CSVs in this
+session predate that field. overruns 0, rebases 0, both files.
+
+`rx_count` on the socket run: 0:575, 1:59843, 2:89028, 3:379, 4:67, 5:41,
+6:14, 7:17, 8:36. The 575 silent ticks and the 3–8 tail are the timeshare
+sender bunching. On the 36 `FLAG_DRAIN_FULL` ticks, wake p50 was 6 µs and max
+10 µs, so the loop was on time; 16 of those 36 were preceded by `rx_count=0`.
+The bound engaged because the sender coalesced, which is what the flag is
+for. No queue: 2c is latest-value slots.
+
+## 2026-08-18 - 2b, HIGHRES_IMU parse
+
+Vendored `c_library_v2` at 975b9eb, common plus the standard/minimal bases
+it includes. Sender packs real v2 HIGHRES_IMU. First smoke was 32-byte
+frames: v2 `_mav_trim_payload` drops trailing zeros, and a mostly-zero IMU
+trims to 20 payload bytes + 10 header + 2 CRC. Filling every field (last
+byte `id=1`) keeps the 63-byte payload, 75 on the wire. That is the frame
+PX4 would send, and the 75 `mavlink_parse_char` calls 2b is supposed to
+cost.
+
+`--parse` is the one variable. Same 400 Hz sender, 250 Hz loop, 600 s,
+`--rt`, load 500 µs (`results/p2b.md`). Both headers: `scheduler_applied=1`,
+`computation_ns=750000`. Sender: 264000 frames of 75 bytes.
+
+| configuration | n | p50 | p99.99 | max | rx_total | parse_ok | drain_full | exec p50 |
+|---|---|---|---|---|---|---|---|---|
+| rt-mav-noparse | 150000 | 10 | 58 | 587 | 240000 | 0 | 0 | 514.2 |
+| rt-mav-parse | 150000 | 8 | 73 | 309 | 240000 | 240000 | 13 | 510.2 |
+
+`parse_ok=rx_total`: every datagram was one complete HIGHRES_IMU. 1.6
+frames × 75 bytes is 120 `parse_char` calls per tick. Wake p50 10 → 8,
+exec p50 514.2 → 510.2. The parse does not move either number past
+run-to-run noise on this pair. overruns 0. exec p50 is 68–69% of the
+750 µs claim, under the 80% warn. This is IMU-only; more message classes
+in 2c/2d add more calls.

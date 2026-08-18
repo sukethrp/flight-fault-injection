@@ -1,0 +1,3 @@
+Vendored snapshot of https://github.com/mavlink/c_library_v2
+commit 975b9eb6b3b114ddda163c1ac2515f9662f034e3
+common dialect plus the standard and minimal bases it includes.

@@ -10,7 +10,8 @@ import numpy as np
 
 def parse_csv(path):
     meta = {}
-    vals = []
+    wake = []
+    exec_us = []
     opener = gzip.open if path.endswith(".gz") else open
     with opener(path, "rt") as f:
         for line in f:
@@ -25,8 +26,10 @@ def parse_csv(path):
             parts = line.split(",")
             if len(parts) < 3:
                 continue
-            vals.append(float(parts[2]) / 1000.0)
-    return meta, np.asarray(vals, dtype=np.float64)
+            wake.append(float(parts[2]) / 1000.0)
+            if len(parts) >= 4:
+                exec_us.append(float(parts[3]) / 1000.0)
+    return meta, np.asarray(wake, dtype=np.float64), np.asarray(exec_us, dtype=np.float64)
 
 
 def display_name(meta, path):
@@ -51,6 +54,24 @@ def warn_if_denied(path, meta, name):
         )
 
 
+def warn_if_computation(path, meta, exec_us):
+    raw = meta.get("computation_ns", "0")
+    try:
+        comp_ns = int(raw)
+    except ValueError:
+        return
+    if comp_ns <= 0 or exec_us.size == 0:
+        return
+    p50_ns = float(np.quantile(exec_us, 0.50)) * 1000.0
+    frac = p50_ns / comp_ns
+    if frac > 0.80:
+        print(
+            f"{path}: exec p50 {p50_ns / 1000.0:.0f} µs is {frac:.0%} of "
+            f"computation_ns={comp_ns}; macOS can demote the thread",
+            file=sys.stderr,
+        )
+
+
 def pct(a, q, n_above_needed=10):
     n = a.size
     n_above = round(n * (1.0 - q))
@@ -64,10 +85,11 @@ def fmt(x):
 
 
 def summarize(path):
-    meta, a = parse_csv(path)
+    meta, a, exec_us = parse_csv(path)
     n = a.size
     name = display_name(meta, path)
     warn_if_denied(path, meta, name)
+    warn_if_computation(path, meta, exec_us)
     p50 = pct(a, 0.50)
     p99 = pct(a, 0.99)
     p999 = pct(a, 0.999)

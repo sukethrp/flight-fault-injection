@@ -24,6 +24,7 @@ struct RtStatus {
     bool        scheduler_applied = false;
     bool        memory_locked     = false;
     bool        affinity_set      = false;
+    int64_t     computation_ns    = 0;  // Darwin constraint computation; 0 if unused
     std::string note;
 };
 

@@ -11,8 +11,8 @@ Companion project: [epuck-edge-ai](https://github.com/sukethrp/epuck-edge-ai),
 which measures on-device inference latency. This one asks what happens when that
 inference arrives late, wrong, or not at all.
 
-**Status:** step 1 of 7, building the measurement instrument. Empty cells below
-mean not measured yet, never estimated.
+**Status:** step 2 of 7, MAVLink parse measured against a HIGHRES_IMU fixture.
+Empty cells below mean not measured yet, never estimated.
 
 ## Result
 
@@ -38,6 +38,40 @@ reference line alongside these curves.
 
 Log x and log y. First bin starts at 1 µs; smaller samples sit there.
 
+Socket drain, same RT policy, 600 s (`results/p2.md`). 400 Hz × 76-byte
+loopback UDP against a dummy sender; PX4 is still a later drop-in.
+`rx_total=240000` (1.6 per tick), `drain_full=36`.
+
+| Configuration | Samples | p50 | p99 | p99.9 | p99.99 | max | rx_total | drain_full |
+|---|---|---|---|---|---|---|---|---|
+| macOS RT, no socket | 150000 | 8 | 22 | 40 | 77 | 343 | 0 | 0 |
+| macOS RT, UDP drain | 150000 | 7 | 20 | 34 | 79 | 536 | 240000 | 36 |
+
+The Phase 2 pair is internally comparable; cross-phase max comparisons are not.
+Phase 1 RT max 225 µs and Phase 2 no-socket max 343 µs differ by machine state
+between days, not by the socket.
+
+Darwin timeshare leeway is about 0.18 of the requested interval
+(`results/rates.md`). The RT floor is absolute, 8–12 µs across 100–1000 Hz
+(`results/rates_rt.md`), so the relative win shrinks at higher rates. 250 Hz
+was a conservative choice for the histogram, not a lucky one.
+
+| Hz | period µs | timeshare p50 | RT p50 | RT / period |
+|---|---|---|---|---|
+| 100 | 10000 | 1883 | 12 | 0.12% |
+| 250 | 4000 | 767 | 10 | 0.25% |
+| 500 | 2000 | 367 | 8 | 0.40% |
+| 1000 | 1000 | 166 | 8 | 0.80% |
+
+MAVLink v2 HIGHRES_IMU, 75 bytes on the wire, 400 Hz. Same RT policy, 600 s
+(`results/p2b.md`). `--parse` is the only variable. `parse_ok=240000` matches
+`rx_total`. Parse does not move the histogram past run-to-run noise.
+
+| Configuration | Samples | p50 | p99 | p99.9 | p99.99 | max | parse_ok |
+|---|---|---|---|---|---|---|---|
+| macOS RT, HIGHRES_IMU drain | 150000 | 10 | 23 | 36 | 58 | 587 | 0 |
+| macOS RT, drain + parse | 150000 | 8 | 26 | 49 | 73 | 309 | 240000 |
+
 ## Fault table
 
 Time-to-detect is measured from the injector stamping an event to a detector
@@ -56,13 +90,17 @@ Target structure. Files appear as their step lands.
 src/
   rt_platform.h/.cpp   monotonic clock + RT scheduling, Linux and Darwin
   ring_log.h           preallocated sample sink, no I/O in the loop
+  udp_rx.h/.cpp        non-blocking loopback bind and recv (step 2)
   loop_bench.cpp       the fixed-rate loop and its own instrumentation
   ekf.h/.cpp           6-state filter with NIS gating (step 4)
   detectors.h/.cpp     staleness, sequence, skew, divergence (step 6)
   failsafe.h/.cpp      fallback state machine (step 6)
+tools/udp_sender.cpp   HIGHRES_IMU v2 UDP source until PX4 SITL (step 2)
+third_party/c_library_v2  vendored MAVLink v2 headers (common dialect)
 injector/              MAVLink proxy, runs on the RT host (step 5)
 analysis/              percentile tables and figures
 scripts/pre-commit     hot path and authorship enforcement
+docs/DESIGN.md         sequencing, including why the socket is measured before PX4
 results/               gzipped CSVs and figures
 ```
 
