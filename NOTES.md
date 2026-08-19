@@ -302,6 +302,41 @@ run-to-run noise on this pair. overruns 0. exec p50 is 68–69% of the
 750 µs claim, under the 80% warn. This is IMU-only; more message classes
 in 2c/2d add more calls.
 
+## 2026-08-18 - 2b vendor path, sender clock
+
+Moved the headers to `third_party/mavlink/` (same snapshot, 975b9eb).
+common.h includes `../standard/standard.h`, which includes
+`../minimal/minimal.h`, so those two bases come along; no other
+dialects. Include path sits on `rt_platform` so both binaries inherit it.
+
+Sender `time_usec` is now `rt::now_ns() / 1000` (monotonic microseconds
+since boot), not the loop index. `id=1` still occupies the last payload
+byte so v2 does not trim the frame to 32 bytes. Did not touch the drain.
+
+## 2026-08-18 - 2b parse in the drain
+
+`mavlink_parse_char` is a byte state machine: 75 calls per HIGHRES_IMU,
+returns 1 only on the completing byte. `mav_msg` / `mav_status` live
+before the loop. Sequence gaps use wrapping uint8 distance so 255->0 is
+not a drop; counted this step because Phase 6 cannot be retrofitted
+without re-running the campaign. `--parse` is gone; a bound socket always
+parses.
+
+`results/p2_mavlink.md`, 600 s, 150000 samples, `--rt`, load 500 µs.
+Header: `scheduler_applied=1`, `computation_ns=750000`. Sender: 264000
+frames of 75 bytes. `parse_ok=rx_total=240000`, `seq_gaps=0`,
+`drain_full=14`. overruns 0.
+
+| configuration | wake p50 | wake p99.99 | wake max | exec p50 |
+|---|---|---|---|---|
+| rt-socket (2a) | 7 | 79 | 536 | 511.3 |
+| rt-mavlink (2b) | 10 | 74 | 477 | 515.4 |
+
+exec p50 511.3 → 515.4 µs (+4.1). The earlier same-sender isolation in
+`results/p2b.md` moved 514.2 → 510.2, the other way, by 4 µs. Parse is
+inside that scatter, not a 100 µs-class cost. 515.4 is 69% of the 750 µs
+Darwin claim, under the 80% warn.
+
 ## 2026-08-18 - Darwin claim scales with period
 
 THREAD_TIME_CONSTRAINT_POLICY computation/constraint were 750 µs and
@@ -330,3 +365,94 @@ Analysis warns on exec p99 above 80% of the claim.
 
 1 kHz tripped the warn: exec p99 200 µs is 107% of 187500 ns.
 `scheduler_applied` still 1. Wake p50 stayed 8 µs. overruns 0.
+
+## 2026-08-18 - 2c, latest-value slots
+
+`src/msg_slots.h`: named `ImuSlot`, not a 256-entry msgid table. Drain
+decodes HIGHRES_IMU into the slot, stamps `rx_mono_ns` from `woke`, copies
+`time_usec`, overwrites if a second frame shares the tick. `seq_gaps`
+uses `(seq - last_seq - 1) & 0xFF`. 2b's `seq_gaps=0` was not luck: the
+working-tree parse already used `uint8_t` wrapping, which is the same
+arithmetic, and 240000 frames wrap 937 times. A missing mask would have
+been a large count, not zero.
+
+`results/p2_slots.md`, 600 s, 150000 samples, `--rt`, load 500 µs.
+Header: `scheduler_applied=1`, `computation_ns=750000`.
+`parse_ok=rx_total=240000`, `seq_gaps=0`, `drain_full=15`. overruns 0.
+
+| configuration | wake p50 | wake p99.99 | wake max | exec p50 |
+|---|---|---|---|---|
+| rt-mavlink (2b) | 10 | 74 | 477 | 515.4 |
+| rt-slots (2c) | 10 | 82 | 171 | 515.0 |
+
+exec p50 515.4 → 515.0. Decode is inside the same 4 µs scatter as the 2b
+parse pair. 515.0 is 69% of the 750 µs Darwin claim.
+
+`skew_ns = sender_us*1000 - rx_mono_ns` on ticks that got an IMU
+(149804); `kSkewNone` on 196 silent ticks. Range -18872666 .. -9166 ns.
+p50 -1.51 ms is wait-until-next-tick, not loopback: the least-stale
+samples sit at -9 µs. First 10% mean vs last 10% mean: -21 µs over the
+middle ~480 s, -44 ns/s. Flat. PX4's `time_usec` in 2e will offset this
+series; the detector uses the slope.
+
+## 2026-08-18 - parse cost claim is dead
+
+`2.56 us per frame` in `a650acb` is not supported. That figure was
+exec p50 511.3 → 515.4 on `results/p2_socket.csv.gz` vs
+`results/p2_mavlink.csv.gz`, divided by 1.6 frames/tick. The same-sender
+isolation in `results/p2b.md` moved 514.2 → 510.2, 4 µs the other way.
+
+The 0.833 µs control spread (`p2_slots` 514.958 vs `p2_slots_b` 515.791)
+is one difference from one pair, zero degrees of freedom. A 4 µs swing
+the wrong way cannot come from a 0.833 µs spread; 0.833 was a lucky
+draw and the real run-to-run floor is at least ~4 µs.
+
+a650acb's subject carries a retracted figure. Current position: parse
+cost unresolved; measure it with the in-run `rx_ns` column instead.
+
+Stop subtracting exec p50 across files. `rx_ns` is a per-tick column:
+two `now_ns` reads around drain+parse+slot, inside one run. Named for
+the whole receive path, not parse alone, so ekf_ns/ctrl_ns can sit
+beside it without another schema break.
+
+## 2026-08-18 - drain_full is not a freshness signal
+
+Prediction: the 15 `FLAG_DRAIN_FULL` ticks in `results/p2_slots.csv.gz`
+carry the most-negative skew, because the bound left fresher datagrams
+unread. Refuted. 6 of 15 sit in the 15 most-negative samples.
+
+IMU skew n=149804 (sentinel dropped): min -18872666, p50 -1507625,
+max -9166. Global minimum is seq 146641, `flags=0`, `rx=6`, one tick
+*after* a drain_full streak. Seq 8927 is `drain_full` with skew -105791,
+rank 147112/149804, freshest 2%.
+
+Two signatures, and Phase 6 has to separate them:
+
+- bound hit **and** skew improving or flat → sender coalescing, harmless.
+  Seq 8927: eight frames arrived just before the wake, newest is fresh.
+- bound hit **and** skew walking one loop period per tick → real backlog.
+  Seq 146636–146640: -1.17, -4.96, -8.48, -12.21, -15.67 ms. Damage
+  shows on 146641, which is not flagged.
+
+`drain_full` alone does not mean stale data was read.
+
+## 2026-08-18 - 2d, staleness floor
+
+`age_ns = woke - rx_mono_ns` at read. Drain-time age is 0 for this
+tick's IMU. `--staleness-limit-periods` default 3. `FLAG_STALE` when
+`age > expected_period * limit` (7.5 ms for the 400 Hz fixture).
+
+Age is only sampled at 4 ms tick boundaries, so the observable floor is
+`ceil(7.5 ms / 4 ms) * 4 ms = 8 ms`. One silent tick (~4 ms) sits under
+the limit; the second tick boundary is the first possible trip. Emitted
+as `staleness_floor_ns` next to `staleness_limit_periods`. That is the
+fault table Floor column; measured TTD sits next to it, not instead of it.
+
+## 2026-08-18 - rx_ns bracketing
+
+`t0 = now_ns()` before the drain, `rx_ns = now_ns() - t0` after the
+slot write. Stage cost is then a column in the same run, so run-to-run
+scatter drops out. Two extra clock reads, inside exec. Same pattern for
+EKF predict/correct in Phase 4; retrofitting means re-running. The
+column is not named parse_ns: the bracket is three stages, and the
+schema should not change shape when ekf_ns and ctrl_ns land beside it.

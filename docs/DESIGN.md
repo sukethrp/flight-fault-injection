@@ -24,19 +24,25 @@ answers 2a. PX4 replaces the sender in 2e with no change to the drain.
 | | | owner |
 |---|---|---|
 | 2a | UDP sender fixture + bounded non-blocking drain, jitter re-measured | you (drain) |
-| 2b | MAVLink v2 headers, real frame parse, parse cost measured separately | split |
+| 2b | MAVLink v2 headers, real frame parse; per-frame cost unresolved at cross-run resolution | split |
 | 2c | latest-value slots, dual timestamps, sequence gaps | you |
 | 2d | staleness accounting per message class | split |
 | 2e | PX4 SITL replaces the sender fixture | you |
 | 2f | final campaign with the real plant | you |
 
-Two measured deltas (socket, then parse), each one variable. Same
-discipline as Phase 1.
+Socket was the first measured delta. Parse cost is unresolved at
+cross-run resolution; the in-run `rx_ns` column is the instrument.
 
 The drain is bounded. An unbounded `recv` loop turns a traffic burst
 into a deadline miss. Latest-value slots in 2c, not a queue: a queue
 turns a timing problem into a memory problem and then into an allocation
 in the hot path.
+
+2d records `age_ns` at the tick boundary and a theoretical detection
+floor `ceil(limit / loop_period) * loop_period` in the CSV header, next
+to `staleness_limit_periods`. The limit is 7.5 ms at the default IMU
+period; the observable floor at 250 Hz is 8 ms. Measured TTD belongs
+next to that floor, not presented bare.
 
 ## Later
 

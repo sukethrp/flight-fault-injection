@@ -34,3 +34,6 @@ target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)
 
 add_executable(udp_sender tools/udp_sender.cpp)
 target_link_libraries(udp_sender PRIVATE rt_platform)
+
+add_executable(test_msg_slots tests/test_msg_slots.cpp)
+target_link_libraries(test_msg_slots PRIVATE rt_platform)

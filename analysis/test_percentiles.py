@@ -12,7 +12,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from percentiles import parse_csv, pct, summarize
+from percentiles import AGE_NONE, FLAG_STALE, parse_csv, pct, summarize
 
 
 N = 100_000
@@ -29,6 +29,10 @@ def write_csv(
     label="synthetic",
     exec_us=None,
     computation_ns=None,
+    age_ns=None,
+    flags=None,
+    rx_ns=None,
+    extra_meta=None,
 ):
     with open(path, "w") as f:
         f.write("# platform=test\n")
@@ -38,7 +42,17 @@ def write_csv(
         f.write("# memory_locked=0\n")
         if computation_ns is not None:
             f.write(f"# computation_ns={computation_ns}\n")
-        f.write("seq,deadline_ns,wake_err_ns,exec_ns,flags\n")
+        if extra_meta:
+            for k, v in extra_meta:
+                f.write(f"# {k}={v}\n")
+        if rx_ns is not None:
+            f.write(
+                "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,flags,rx_count,seq_gaps,skew_ns,age_ns\n"
+            )
+        elif age_ns is None:
+            f.write("seq,deadline_ns,wake_err_ns,exec_ns,flags\n")
+        else:
+            f.write("seq,deadline_ns,wake_err_ns,exec_ns,flags,rx_count,seq_gaps,skew_ns,age_ns\n")
         exec_ns = (
             [int(round(x * 1000.0)) for x in exec_us]
             if exec_us is not None
@@ -46,7 +60,16 @@ def write_csv(
         )
         for i, us in enumerate(wake_us):
             ns = int(round(us * 1000.0))
-            f.write(f"{i},0,{ns},{exec_ns[i]},0\n")
+            fl = 0 if flags is None else int(flags[i])
+            if rx_ns is not None:
+                age = 0 if age_ns is None else int(age_ns[i])
+                f.write(
+                    f"{i},0,{ns},{exec_ns[i]},{int(rx_ns[i])},{fl},0,0,0,{age}\n"
+                )
+            elif age_ns is None:
+                f.write(f"{i},0,{ns},{exec_ns[i]},{fl}\n")
+            else:
+                f.write(f"{i},0,{ns},{exec_ns[i]},{fl},0,0,0,{int(age_ns[i])}\n")
 
 
 class PercentilesTest(unittest.TestCase):
@@ -58,7 +81,7 @@ class PercentilesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "synthetic.csv")
             write_csv(path, wake_us)
-            _, loaded, _ = parse_csv(path)
+            _, loaded, *_ = parse_csv(path)
             got = pct(loaded, 0.9999)
         self.assertIsNotNone(got)
         self.assertLess(abs(got - known) / known, 0.01)
@@ -150,6 +173,104 @@ class PercentilesTest(unittest.TestCase):
                 summarize(path)
         self.assertIn("demote", err.getvalue())
         self.assertIn("exec p99", err.getvalue())
+
+    def test_stale_flag_bit(self):
+        self.assertEqual(FLAG_STALE, 1 << 3)
+        self.assertEqual(FLAG_STALE, 8)
+
+    def test_stale_flag_counted_from_csv(self):
+        n = 100
+        wake_us = np.linspace(1.0, 100.0, n)
+        flags = [0] * 80 + [FLAG_STALE] * 20
+        age_ns = [0] * 80 + [8_000_000] * 20
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "stale.csv")
+            write_csv(path, wake_us, age_ns=age_ns, flags=flags)
+            row = summarize(path)
+        self.assertEqual(row["stale_n"], 20)
+        self.assertEqual(row["age"]["n"], 100)
+
+    def test_age_sentinel_excluded(self):
+        wake_us = np.linspace(1.0, 100.0, 100)
+        age_ns = [1000] * 90 + [AGE_NONE] * 10
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "age.csv")
+            write_csv(path, wake_us, age_ns=age_ns)
+            _, _, _, _, age, flags = parse_csv(path)
+        self.assertEqual(age.size, 90)
+        self.assertTrue(np.allclose(age, 1.0))
+        self.assertEqual(flags.size, 100)
+
+    def test_age_table_same_gates(self):
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        age_ns = np.arange(1000, 2000, dtype=np.int64)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "age_gate.csv")
+            write_csv(path, wake_us, age_ns=age_ns)
+            row = summarize(path)
+        self.assertEqual(row["age"]["n"], 1000)
+        self.assertIsNotNone(row["age"]["p50"])
+        self.assertIsNotNone(row["age"]["p99"])
+        self.assertIsNone(row["age"]["p999"])
+        self.assertIsNone(row["age"]["p9999"])
+
+    def test_age_and_exec_tables_emitted(self):
+        from percentiles import main
+
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        exec_us = np.full(1000, 515.4)
+        age_ns = np.full(1000, 0)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "tables.csv")
+            out = os.path.join(td, "out.md")
+            write_csv(path, wake_us, exec_us=exec_us, age_ns=age_ns)
+            stdout = io.StringIO()
+            with patch.object(sys, "stdout", stdout), patch.object(
+                sys, "argv", ["percentiles.py", path, "--out", out]
+            ):
+                main()
+        text = stdout.getvalue()
+        self.assertIn("exec_ns, microseconds", text)
+        self.assertIn("age_ns, microseconds", text)
+        self.assertIn("kAgeNone rows dropped", text)
+        self.assertIn("rx_ns, microseconds", text)
+        self.assertEqual(text.count("| configuration | n | mean |"), 4)
+
+    def test_staleness_floor_is_8ms_for_imu(self):
+        # ceil(7.5 ms / 4 ms) * 4 ms. same integer ceil as src/msg_slots.h.
+        limit_ns = 3 * 2_500_000
+        period_ns = 4_000_000
+        floor = ((limit_ns + period_ns - 1) // period_ns) * period_ns
+        self.assertEqual(limit_ns, 7_500_000)
+        self.assertEqual(floor, 8_000_000)
+        self.assertLess(period_ns, limit_ns)
+        self.assertGreater(2 * period_ns, limit_ns)
+
+    def test_staleness_floor_ns_in_metadata(self):
+        wake_us = np.linspace(1.0, 100.0, 100)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "floor.csv")
+            write_csv(
+                path,
+                wake_us,
+                extra_meta=[
+                    ("staleness_limit_periods", "3"),
+                    ("staleness_floor_ns", "8000000"),
+                ],
+            )
+            row = summarize(path)
+        self.assertEqual(row["meta"]["staleness_limit_periods"], "3")
+        self.assertEqual(row["meta"]["staleness_floor_ns"], "8000000")
+
+    def test_rx_ns_table(self):
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        rx_ns = np.full(1000, 12000)
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "rx.csv")
+            write_csv(path, wake_us, rx_ns=rx_ns)
+            row = summarize(path)
+        self.assertEqual(row["rx"]["n"], 1000)
+        self.assertAlmostEqual(row["rx"]["p50"], 12.0, places=1)
 
 
 if __name__ == "__main__":

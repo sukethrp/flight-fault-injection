@@ -5,17 +5,20 @@
 #include <vector>
 
 constexpr int32_t kSkewNone = INT32_MIN;  // no IMU this tick; not a skew sample
+constexpr int64_t kAgeNone  = INT64_MIN;  // slot never filled; not an age sample
 
 // One row per loop iteration. POD, small, written from inside the hot loop.
 struct Sample {
     int64_t  deadline_ns;
     int32_t  wake_err_ns;   // actual wake minus deadline. scheduler lateness.
     int32_t  exec_ns;       // how long the work in this period took
+    int32_t  rx_ns;         // drain+parse+slot. not parse alone; ekf_ns/ctrl_ns land beside this.
     uint32_t seq;
     uint32_t flags;
     uint16_t rx_count;      // datagrams drained this tick. 0 with no socket.
     uint16_t seq_gaps;      // missing MAVLink seq numbers this tick. wrapping uint8_t.
     int32_t  skew_ns;       // sender_us*1000 - rx_mono_ns. detector uses the slope; PX4 offset is arbitrary. kSkewNone if silent.
+    int64_t  age_ns;        // woke - rx_mono_ns at read. kAgeNone if the slot was never filled.
 };
 
 // Wake error and budget violations are different failure modes. A 50 ms stall
@@ -25,6 +28,7 @@ enum : uint32_t {
     FLAG_OVERRUN    = 1u << 0,  // work ran past the following deadline
     FLAG_REBASED    = 1u << 1,  // deadline skipped forward, periods were dropped
     FLAG_DRAIN_FULL = 1u << 2,  // recv hit its per-tick bound; leftover or bound too tight
+    FLAG_STALE      = 1u << 3,  // age > expected_period * limit. instrumentation; detector is step 6
 };
 
 // Fixed capacity. No allocation, no locks, no I/O in push().
@@ -42,13 +46,14 @@ class RingLog {
         FILE* f = std::fopen(path.c_str(), "w");
         if (!f) return false;
         for (const auto& m : meta) std::fprintf(f, "# %s\n", m.c_str());
-        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,flags,rx_count,seq_gaps,skew_ns\n");
+        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,flags,rx_count,seq_gaps,skew_ns,age_ns\n");
         for (size_t i = 0; i < n_; ++i) {
             const Sample& s = buf_[i];
-            std::fprintf(f, "%u,%lld,%d,%d,%u,%u,%u,%d\n", s.seq,
+            std::fprintf(f, "%u,%lld,%d,%d,%d,%u,%u,%u,%d,%lld\n", s.seq,
                          static_cast<long long>(s.deadline_ns), s.wake_err_ns,
-                         s.exec_ns, s.flags, static_cast<unsigned>(s.rx_count),
-                         static_cast<unsigned>(s.seq_gaps), s.skew_ns);
+                         s.exec_ns, s.rx_ns, s.flags, static_cast<unsigned>(s.rx_count),
+                         static_cast<unsigned>(s.seq_gaps), s.skew_ns,
+                         static_cast<long long>(s.age_ns));
         }
         std::fclose(f);
         return true;

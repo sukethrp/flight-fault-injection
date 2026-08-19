@@ -21,7 +21,7 @@ def main():
 
     fig, ax = plt.subplots()
     for path in args.csvs:
-        meta, wake_us, _ = parse_csv(path)
+        meta, wake_us, *_ = parse_csv(path)
         name = display_name(meta, path)
         warn_if_denied(path, meta, name)
         n = wake_us.size

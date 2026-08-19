@@ -21,6 +21,7 @@ struct Args {
     int         port    = 0;
     int         computation_us = 0;
     int         constraint_us  = 0;
+    int         staleness_limit_periods = 3;
     bool        rt      = false;
     std::string label;
     std::string out = "results/loop.csv";
@@ -49,9 +50,10 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--port")    a.port     = std::atoi(next());
         else if (f == "--computation-us") a.computation_us = std::atoi(next());
         else if (f == "--constraint-us")  a.constraint_us  = std::atoi(next());
+        else if (f == "--staleness-limit-periods") a.staleness_limit_periods = std::atoi(next());
         else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
     }
-    return a.hz > 0 && a.seconds > 0;
+    return a.hz > 0 && a.seconds > 0 && a.staleness_limit_periods > 0;
 }
 
 inline void busy_ns(int64_t ns) {
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
     uint32_t drain_fulls = 0;
     uint32_t parse_ok    = 0;
     uint32_t seq_gaps    = 0;
+    uint32_t stales      = 0;
 
     rt::RtConfig cfg;
     cfg.priority             = a.prio;
@@ -94,6 +97,9 @@ int main(int argc, char** argv) {
     mavlink_message_t mav_msg{};
     mavlink_status_t  mav_status{};
     MsgSlots slots{};
+    slots.imu.expected_period_ns = kImuPeriodNs;
+    const int64_t stale_lim = static_cast<int64_t>(a.staleness_limit_periods);
+    const int64_t stale_floor_ns = staleness_floor_ns(kImuPeriodNs * stale_lim, period_ns);
     int sock = -1;
     if (a.port > 0) {
         sock = udp_bind_nonblocking(a.port);
@@ -115,7 +121,9 @@ int main(int argc, char** argv) {
         uint16_t rx = 0;
         uint16_t parsed = 0;
         uint16_t gaps = 0;
+        int32_t  rx_ns = 0;
         if (sock >= 0) {
+            const int64_t t0 = rt::now_ns();
             while (rx < kMaxMsgsPerTick) {
                 const long n = udp_try_recv(sock, rxbuf, sizeof(rxbuf));
                 if (n <= 0) break;
@@ -148,6 +156,7 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            rx_ns = static_cast<int32_t>(rt::now_ns() - t0);
         }
 
         busy_ns(load_ns);
@@ -158,13 +167,23 @@ int main(int argc, char** argv) {
         s.deadline_ns = next;
         s.wake_err_ns = static_cast<int32_t>(woke - next);
         s.exec_ns     = static_cast<int32_t>(done - woke);
+        s.rx_ns       = rx_ns;
         s.seq         = static_cast<uint32_t>(i);
         s.rx_count    = rx;
         s.seq_gaps    = gaps;
         s.skew_ns     = kSkewNone;
+        s.age_ns      = kAgeNone;
         if (slots.imu.valid && slots.imu.rx_mono_ns == woke) {
             s.skew_ns = static_cast<int32_t>(
                 static_cast<int64_t>(slots.imu.sender_us * 1000ull) - slots.imu.rx_mono_ns);
+        }
+        if (slots.imu.valid) {
+            slots.imu.age_ns = woke - slots.imu.rx_mono_ns;
+            s.age_ns = slots.imu.age_ns;
+            if (slots.imu.expected_period_ns > 0 &&
+                slots.imu.age_ns > slots.imu.expected_period_ns * stale_lim) {
+                s.flags |= FLAG_STALE;
+            }
         }
         if (done > next + period_ns) { s.flags |= FLAG_OVERRUN; }
         if (rx == kMaxMsgsPerTick)   { s.flags |= FLAG_DRAIN_FULL; }
@@ -184,6 +203,7 @@ int main(int argc, char** argv) {
             if (s.flags & FLAG_OVERRUN)    ++overruns;
             if (s.flags & FLAG_REBASED)    ++rebases;
             if (s.flags & FLAG_DRAIN_FULL) ++drain_fulls;
+            if (s.flags & FLAG_STALE)      ++stales;
             rx_total += rx;
             parse_ok += parsed;
             seq_gaps += gaps;
@@ -210,6 +230,10 @@ int main(int argc, char** argv) {
         "parse=" + std::string(a.port > 0 ? "1" : "0"),
         "parse_ok=" + std::to_string(parse_ok),
         "seq_gaps=" + std::to_string(seq_gaps),
+        "staleness_limit_periods=" + std::to_string(a.staleness_limit_periods),
+        "staleness_floor_ns=" + std::to_string(stale_floor_ns),
+        "imu_period_ns=" + std::to_string(kImuPeriodNs),
+        "stale=" + std::to_string(stales),
         "computation_ns=" + std::to_string(st.computation_ns),
         "constraint_ns=" + std::to_string(st.constraint_ns),
         "preemptible=" + std::to_string(st.preemptible),
@@ -225,7 +249,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr,
-                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps\n",
-                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps);
+                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps, %u stale\n",
+                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps, stales);
     return 0;
 }
