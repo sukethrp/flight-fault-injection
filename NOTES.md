@@ -456,3 +456,12 @@ scatter drops out. Two extra clock reads, inside exec. Same pattern for
 EKF predict/correct in Phase 4; retrofitting means re-running. The
 column is not named parse_ns: the bracket is three stages, and the
 schema should not change shape when ekf_ns and ctrl_ns land beside it.
+
+## 2026-08-18 - measurement-quote warn
+
+scripts/pre-commit warns, does not block, when a commit touches src/
+and the message contains a number with a unit (us, ms, ns, %), unless
+something under results/ is also staged. Same file is installed as
+commit-msg: pre-commit runs before `git commit -m` writes the message,
+so a pre-commit-only check would miss the subject. That is the a650acb
+failure mode.

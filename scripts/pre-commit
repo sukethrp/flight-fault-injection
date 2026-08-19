@@ -1,14 +1,48 @@
 #!/usr/bin/env bash
 # Mechanical enforcement of the rules that .cursor/rules only advises.
 # Bypass: git commit --no-verify  (do it consciously, note it in NOTES.md)
+#
+# Install this file as both pre-commit and commit-msg. pre-commit runs
+# before `git commit -m` has written the message, so the measurement-quote
+# warn would miss the subject if it only lived in pre-commit.
 
 set -uo pipefail
 fail=0
+hook=$(basename -- "$0")
 
 if [[ -n "${CURSOR_AGENT:-}" ]]; then
     echo "pre-commit: refusing to commit from an agent shell."
     echo "            run 'git diff --cached', read it, then commit yourself."
     exit 1
+fi
+
+warn_quoted_measurement() {
+    local msgfile="$1"
+    [[ -f "$msgfile" ]] || return 0
+    local staged
+    staged=$(git diff --cached --name-only --diff-filter=ACM)
+    [[ -z "$staged" ]] && return 0
+    local touches_src=0 touches_results=0
+    while IFS= read -r f; do
+        case "$f" in
+            src/*) touches_src=1 ;;
+            results/*) touches_results=1 ;;
+        esac
+    done <<< "$staged"
+    if (( touches_src && ! touches_results )); then
+        if grep -E '[0-9]+(\.[0-9]+)?[[:space:]]*(us|ms|ns|µs|μs|%)' "$msgfile" >/dev/null; then
+            echo "pre-commit: warning: src/ changed and the message quotes a number with a unit,"
+            echo "            but nothing under results/ is staged."
+            echo "            that is how a650acb quoted a figure whose CSV was not in the tree."
+        fi
+    fi
+}
+
+# commit-msg invocation: first arg is the message file. warn only, then exit
+# so the build and hot-path checks are not run twice.
+if [[ "$hook" == "commit-msg" ]]; then
+    warn_quoted_measurement "$1"
+    exit 0
 fi
 
 staged=$(git diff --cached --name-only --diff-filter=ACM)
