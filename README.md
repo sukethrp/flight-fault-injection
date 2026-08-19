@@ -63,6 +63,12 @@ was a conservative choice for the histogram, not a lucky one.
 | 500 | 2000 | 367 | 8 | 0.40% |
 | 1000 | 1000 | 166 | 8 | 0.80% |
 
+Darwin computation/constraint now scale as 3/16 and 1/2 of the period
+(`results/rates_rt2.md`), so the 250 Hz claim stays 750 µs / 2 ms and
+1 kHz is 188 µs / 500 µs. Same 60 s, load 200 µs, `--rt`: wake p50 is
+13 / 10 / 10 / 8 µs at 100 / 250 / 500 / 1000 Hz. At 1 kHz, exec p99
+200 µs is 107% of the 188 µs claim; `scheduler_applied` stays 1.
+
 MAVLink v2 HIGHRES_IMU, 75 bytes on the wire, 400 Hz. Same RT policy, 600 s
 (`results/p2b.md`). `--parse` is the only variable. `parse_ok=240000` matches
 `rx_total`. Parse does not move the histogram past run-to-run noise.

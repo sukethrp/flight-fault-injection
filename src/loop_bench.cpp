@@ -19,6 +19,8 @@ struct Args {
     int         prio    = 80;
     int         core    = -1;
     int         port    = 0;
+    int         computation_us = 0;
+    int         constraint_us  = 0;
     bool        rt      = false;
     std::string label;
     std::string out = "results/loop.csv";
@@ -45,6 +47,8 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
         else if (f == "--port")    a.port     = std::atoi(next());
+        else if (f == "--computation-us") a.computation_us = std::atoi(next());
+        else if (f == "--constraint-us")  a.constraint_us  = std::atoi(next());
         else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
     }
     return a.hz > 0 && a.seconds > 0;
@@ -79,6 +83,8 @@ int main(int argc, char** argv) {
     cfg.priority             = a.prio;
     cfg.core                 = a.core;
     cfg.period_ns            = period_ns;
+    cfg.computation_ns       = static_cast<int64_t>(a.computation_us) * 1000LL;
+    cfg.constraint_ns        = static_cast<int64_t>(a.constraint_us) * 1000LL;
     cfg.scheduler_requested  = a.rt;
     const rt::RtStatus st = rt::apply(cfg);
 
@@ -205,6 +211,8 @@ int main(int argc, char** argv) {
         "parse_ok=" + std::to_string(parse_ok),
         "seq_gaps=" + std::to_string(seq_gaps),
         "computation_ns=" + std::to_string(st.computation_ns),
+        "constraint_ns=" + std::to_string(st.constraint_ns),
+        "preemptible=" + std::to_string(st.preemptible),
         "scheduler_requested=" + std::string(cfg.scheduler_requested ? "1" : "0"),
         "scheduler_applied=" + std::string(st.scheduler_applied ? "1" : "0"),
         "memory_locked=" + std::string(st.memory_locked ? "1" : "0"),

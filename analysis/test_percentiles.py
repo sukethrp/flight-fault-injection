@@ -136,7 +136,20 @@ class PercentilesTest(unittest.TestCase):
             with patch.object(sys, "stderr", err):
                 summarize(path)
         self.assertIn("demote", err.getvalue())
+        self.assertIn("exec p99", err.getvalue())
         self.assertIn("87%", err.getvalue())
+
+    def test_exec_p50_under_p99_over_warns(self):
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        exec_us = np.concatenate([np.full(980, 500.0), np.full(20, 700.0)])
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "tail.csv")
+            write_csv(path, wake_us, exec_us=exec_us, computation_ns=750000)
+            err = io.StringIO()
+            with patch.object(sys, "stderr", err):
+                summarize(path)
+        self.assertIn("demote", err.getvalue())
+        self.assertIn("exec p99", err.getvalue())
 
 
 if __name__ == "__main__":

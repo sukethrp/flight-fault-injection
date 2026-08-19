@@ -40,20 +40,30 @@ RtStatus apply(const RtConfig& cfg) {
 
     if (cfg.scheduler_requested && cfg.period_ns > 0) {
         thread_time_constraint_policy_data_t pol{};
-        pol.period = static_cast<uint32_t>(ns_to_ticks(cfg.period_ns));
-        // measured exec ~500 µs / 4 ms period in healthy.csv. 750 µs is 1.5x
-        // that (18.75% duty), not the whole period. preemptible=0: seq 3884 was preempted in busy_ns.
-        constexpr int64_t kComputationNs = 750000;
-        pol.computation = static_cast<uint32_t>(ns_to_ticks(kComputationNs));
-        pol.constraint  = static_cast<uint32_t>(ns_to_ticks(2000000));
-        pol.preemptible = 0;
+        // 3/16 computation, 1/2 constraint. 750 µs / 2 ms of a 4 ms period
+        // was 1.47x p2_socket exec 511.3 µs. at 1 kHz that claim is 188 µs
+        // and 511 µs of work misses every tick.
+        int64_t computation_ns = cfg.computation_ns > 0
+            ? cfg.computation_ns : cfg.period_ns * 3 / 16;
+        int64_t constraint_ns = cfg.constraint_ns > 0
+            ? cfg.constraint_ns : cfg.period_ns / 2;
+        if (constraint_ns > cfg.period_ns) {
+            constraint_ns = cfg.period_ns;
+            st.note += "constraint_ns clamped to period_ns; ";
+        }
+        pol.period      = static_cast<uint32_t>(ns_to_ticks(cfg.period_ns));
+        pol.computation = static_cast<uint32_t>(ns_to_ticks(computation_ns));
+        pol.constraint  = static_cast<uint32_t>(ns_to_ticks(constraint_ns));
+        pol.preemptible = 0;  // seq 3884 was descheduled inside busy_ns
 
         const kern_return_t kr = thread_policy_set(
             pthread_mach_thread_np(pthread_self()), THREAD_TIME_CONSTRAINT_POLICY,
             reinterpret_cast<thread_policy_t>(&pol), THREAD_TIME_CONSTRAINT_POLICY_COUNT);
         if (kr == KERN_SUCCESS) {
             st.scheduler_applied = true;
-            st.computation_ns    = kComputationNs;
+            st.computation_ns    = computation_ns;
+            st.constraint_ns     = constraint_ns;
+            st.preemptible       = 0;
         } else {
             st.note += "THREAD_TIME_CONSTRAINT_POLICY rejected; ";
         }

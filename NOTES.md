@@ -301,3 +301,32 @@ exec p50 514.2 → 510.2. The parse does not move either number past
 run-to-run noise on this pair. overruns 0. exec p50 is 68–69% of the
 750 µs claim, under the 80% warn. This is IMU-only; more message classes
 in 2c/2d add more calls.
+
+## 2026-08-18 - Darwin claim scales with period
+
+THREAD_TIME_CONSTRAINT_POLICY computation/constraint were 750 µs and
+2 ms at every rate, so at 1 kHz the constraint exceeded the period.
+They now default to 3/16 and 1/2 of `period_ns` (750 µs and 2 ms at
+250 Hz, the 1.47x margin on p2_socket exec 511.3 µs). `--computation-us`
+and `--constraint-us` override. constraint is clamped to the period, never
+asserted.
+
+Sized as duty cycle, not as a constant from exec. Inflating the fraction
+so a 200 µs `--load-us` fits at 1 kHz (need ~29%) would loosen 250 Hz to
+1.2 ms, which is no longer the measured 1.47x. The 1 kHz sweep with 200 µs
+of work against an 188 µs claim is supposed to trip the analysis warn.
+CSV header records `computation_ns`, `constraint_ns`, `preemptible`.
+Analysis warns on exec p99 above 80% of the claim.
+
+`results/rates_rt2.md`, 60 s, load 200 µs, `--rt`. Headers all
+`scheduler_applied=1`. computation_ns 1875000 / 750000 / 375000 / 187500.
+
+| hz | period_us | computation_us | n | wake p50 | exec p50 | exec p99 |
+|---|---|---|---|---|---|---|
+| 100 | 10000 | 1875 | 6000 | 13 | 200.1 | 200 |
+| 250 | 4000 | 750 | 15000 | 10 | 200.1 | 200 |
+| 500 | 2000 | 375 | 30000 | 10 | 200.1 | 200 |
+| 1000 | 1000 | 188 | 60000 | 8 | 200.1 | 200 |
+
+1 kHz tripped the warn: exec p99 200 µs is 107% of 187500 ns.
+`scheduler_applied` still 1. Wake p50 stayed 8 µs. overruns 0.

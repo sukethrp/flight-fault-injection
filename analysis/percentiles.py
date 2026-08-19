@@ -62,11 +62,13 @@ def warn_if_computation(path, meta, exec_us):
         return
     if comp_ns <= 0 or exec_us.size == 0:
         return
-    p50_ns = float(np.quantile(exec_us, 0.50)) * 1000.0
-    frac = p50_ns / comp_ns
+    p99 = pct(exec_us, 0.99)
+    if p99 is None:
+        return
+    frac = (p99 * 1000.0) / comp_ns
     if frac > 0.80:
         print(
-            f"{path}: exec p50 {p50_ns / 1000.0:.0f} µs is {frac:.0%} of "
+            f"{path}: exec p99 {p99:.0f} µs is {frac:.0%} of "
             f"computation_ns={comp_ns}; macOS can demote the thread",
             file=sys.stderr,
         )
