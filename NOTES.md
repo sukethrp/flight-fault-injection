@@ -496,3 +496,46 @@ passed. Same species as the a650acb retraction: the check looked at the
 wrong snapshot. Hook now `git checkout-index`s the staged tree into a temp
 dir and configures/builds that. A repo that records its own broken commits
 reads as more trustworthy than one that appears never to have had any.
+
+## 2026-08-22 - ω sweep on tracking asymmetry
+
+Closed-loop baseline (`results/p3_tracking.md`, 20 s laps, ω = 2π/20):
+steady lap RMS N/E 0.3366 / 0.3283 m. Hold scored on final 2 s of each 4 s
+hold: N/E 0.0176 / 0.0119 m. D steady RMS 0.0003 m.
+
+Same controller/plant, `kLapTicks=2000` (40 s laps), 240 s
+(`results/p3_tracking_omega40.md`), same hold window:
+
+| axis | lap RMS 20 s | lap RMS 40 s | ratio | hold 20 s | hold 40 s | ratio |
+|---|---|---|---|---|---|---|
+| N | 0.3366 | 0.1737 | 0.52 | 0.0176 | 0.0080 | 0.45 |
+| E | 0.3283 | 0.1729 | 0.53 | 0.0119 | 0.0104 | 0.87 |
+| D | 0.0001 | 0.0000 | — | 0.0005 | 0.0000 | — |
+
+Lap RMS scales ≈ linearly with ω (phase lag). Full-hold scoring previously
+folded lap-entry settling into hold RMS (E hold looked like 0.126 m) and
+made hold appear to track ω; final-2 s hold does not. `R·atan(ωτ)` with
+τ=0.05 s predicts 0.031 / 0.016 m — underpredicts lap RMS by ~10×, so
+plant lag explains the ω ratio, not the absolute error. Trajectory restored
+to 20 s laps after the run.
+
+## 2026-08-22 - the ~300 author-owned lines
+
+Scaffold is agent work. The update equations, the FSM policy, and the
+payload corruptors are not. That is the interview surface: roughly three
+hundred lines the author has to defend from memory.
+
+| Where | What | Why it is the one asked about |
+|---|---|---|
+| `src/ekf.cpp` | predict, correct, NIS gate, Joseph form | the gate is both robustness and a detector; one mechanism, two jobs |
+| `src/failsafe.cpp` | transitions, N-consecutive confirmation, asymmetric hysteresis | a detector that chatters is worse than none |
+| `injector/fault.cpp` (payload paths; proxy wires them) | bit flip, bias, stuck, GPS jump, clock skew | how you corrupt determines what the detector can see |
+
+χ² critical values for 3 degrees of freedom (position innovation):
+7.815 at 95%, 11.345 at 99%, 16.266 at 99.9%. Default gate is 7.815
+(`EkfConfig::nis_gate`).
+
+Joseph form is \(P = (I-KH)P(I-KH)^\top + KRK^\top\). The textbook
+\((I-KH)P\) loses symmetry and eventually positive-definiteness; that
+shows up as a filter that dies forty minutes into a sixty-minute soak.
+Do not ship the short form.

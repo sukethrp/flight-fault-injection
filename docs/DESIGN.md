@@ -61,10 +61,18 @@ the CSV header, next to `staleness_limit_periods`. At 250 Hz with limit
 3: IMU 8 ms (limit 7.5 ms), position 60 ms, GPS 600 ms. Measured TTD
 belongs next to that floor, not presented bare.
 
-## Later
+## Phase 4 — estimator (author-owned update)
 
-Step 4 estimator, step 6 detectors and failsafe. Details land with those
-steps.
+Scaffold: 6-state NED position+velocity, fixed-size float matrices,
+`--ekf` wiring, `ekf_ns`, CSV state/NIS/rejects. The author writes
+`predict`, `correct`, the NIS gate, and the Joseph-form covariance
+update in `src/ekf.cpp`. The gate is both robustness and a detector;
+reject count is mirrored into the detector bitfield, not recomputed.
+
+χ² critical values, 3 dof: 7.815 (95%), 11.345 (99%), 16.266 (99.9%).
+Joseph form \(P=(I-KH)P(I-KH)^\top+KRK^\top\) — the short \((I-KH)P\)
+loses symmetry and positive-definiteness on long soaks. Defense crib:
+`NOTES.md` 2026-08-22.
 
 ## Phase 5 — kernel loss vs proxy
 
@@ -84,6 +92,21 @@ same Bernoulli rate.
 Teardown is pf first, then dnctl. `dnctl -q flush` while the pf rule
 still references the pipe blackholes the port rather than restoring it,
 producing `rx_total=0` that reads as 100% loss.
+
+Payload corruptors (bit flip, bias, stuck, GPS jump, clock skew) stay
+`// AUTHOR: implement` in `injector/fault.cpp`. How you corrupt
+determines what the detector can see; that mapping is the interview
+question, not the proxy's poll loop.
+
+## Phase 6 — detectors and failsafe
+
+Detectors are agent-owned and fully implemented (staleness, seq gap,
+skew slope, deadline miss, stuck variance, `trace(P)` divergence; NIS
+reject count mirrored from the EKF). Failsafe scaffold:
+`NOMINAL/DEGRADED/SAFE/LOCKED`, confirmation counters, asymmetric hold
+timers, transition event log. Transition predicates and hysteresis
+policy in `src/failsafe.cpp` are author-owned: a detector that chatters
+is worse than none.
 
 ## Phase 7 — campaign on one host
 
