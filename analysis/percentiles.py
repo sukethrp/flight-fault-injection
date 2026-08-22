@@ -11,15 +11,21 @@ FLAG_STALE = 1 << 3
 AGE_NONE = np.iinfo(np.int64).min
 
 
+TICK_CTRL = 1 << 0
+TICK_TELEM = 1 << 1
+
+
 def parse_csv(path):
     meta = {}
     wake = []
     exec_us = []
     rx_us = []
+    ctrl_us = []
     age_imu_us = []
     age_pos_us = []
     age_gps_us = []
     flags = []
+    tick_class = []
     header = None
     opener = gzip.open if path.endswith(".gz") else open
     with opener(path, "rt") as f:
@@ -44,6 +50,16 @@ def parse_csv(path):
                 exec_us.append(float(parts[3]) / 1000.0)
             if "rx_ns" in rec:
                 rx_us.append(float(rec["rx_ns"]) / 1000.0)
+            tc = int(rec["tick_class"]) if "tick_class" in rec else 0
+            tick_class.append(tc)
+            # ctrl_ns is 0 on non-control ticks; drop those so plumbing cost is not diluted.
+            if "ctrl_ns" in rec:
+                cns = int(float(rec["ctrl_ns"]))
+                if "tick_class" not in rec:
+                    if cns != 0:
+                        ctrl_us.append(cns / 1000.0)
+                elif (tc & TICK_CTRL) != 0:
+                    ctrl_us.append(cns / 1000.0)
             imu_key = "age_imu_ns" if "age_imu_ns" in rec else "age_ns" if "age_ns" in rec else None
             if imu_key is not None:
                 v = int(rec[imu_key])
@@ -68,6 +84,8 @@ def parse_csv(path):
         np.asarray(flags, dtype=np.int64),
         np.asarray(age_pos_us, dtype=np.float64),
         np.asarray(age_gps_us, dtype=np.float64),
+        np.asarray(ctrl_us, dtype=np.float64),
+        np.asarray(tick_class, dtype=np.int64),
     )
 
 
@@ -179,8 +197,35 @@ def meta_int(meta, key, default=0):
         return default
 
 
+def wake_by_tick_class(wake_us, tick_class):
+    """Split wake so control ticks are not diluted by the 4/5 plain ticks."""
+    if tick_class.size == 0 or tick_class.size != wake_us.size:
+        return None
+    if not np.any(tick_class):
+        return None
+    plain = wake_us[tick_class == 0]
+    ctrl = wake_us[(tick_class & TICK_CTRL) != 0]
+    telem = wake_us[(tick_class & TICK_TELEM) != 0]
+    return {
+        "wake_plain": dist_stats(plain),
+        "wake_ctrl": dist_stats(ctrl),
+        "wake_telem": dist_stats(telem),
+    }
+
+
 def summarize(path):
-    meta, a, exec_us, rx_us, age_imu_us, flags, age_pos_us, age_gps_us = parse_csv(path)
+    (
+        meta,
+        a,
+        exec_us,
+        rx_us,
+        age_imu_us,
+        flags,
+        age_pos_us,
+        age_gps_us,
+        ctrl_us,
+        tick_class,
+    ) = parse_csv(path)
     n = a.size
     name = display_name(meta, path)
     warn_if_denied(path, meta, name)
@@ -191,6 +236,8 @@ def summarize(path):
     age_imu_d = dist_stats(age_imu_us)
     age_pos_d = dist_stats(age_pos_us)
     age_gps_d = dist_stats(age_gps_us)
+    ctrl_d = dist_stats(ctrl_us)
+    by_class = wake_by_tick_class(a, tick_class)
     warn_tail(path, "wake_err_ns", wake)
     if exec_d["n"] != wake["n"]:
         warn_tail(path, "exec_ns", exec_d)
@@ -202,8 +249,10 @@ def summarize(path):
         warn_tail(path, "age_pos_ns", age_pos_d)
     if age_gps_d["n"] > 0 and age_gps_d["n"] != wake["n"]:
         warn_tail(path, "age_gps_ns", age_gps_d)
+    if ctrl_d["n"] > 0:
+        warn_tail(path, "ctrl_ns", ctrl_d)
     stale_n = int(np.count_nonzero(flags & FLAG_STALE)) if flags.size else 0
-    return {
+    out = {
         "path": path,
         "name": name,
         "n": n,
@@ -223,6 +272,7 @@ def summarize(path):
         "age_imu": age_imu_d,
         "age_pos": age_pos_d,
         "age_gps": age_gps_d,
+        "ctrl": ctrl_d,
         "stale_n": stale_n,
         "stale_imu": meta_int(meta, "stale_imu", stale_n),
         "stale_pos": meta_int(meta, "stale_pos"),
@@ -230,6 +280,9 @@ def summarize(path):
         "wake_us": a,
         "meta": meta,
     }
+    if by_class is not None:
+        out.update(by_class)
+    return out
 
 
 def md_dist_table(rows, key, prec):
@@ -269,6 +322,26 @@ def main():
     lines += md_dist_table(rows, "age_pos", 1)
     lines += ["", "age_gps_ns, microseconds. kAgeNone rows dropped. Same files.", ""]
     lines += md_dist_table(rows, "age_gps", 1)
+    lines += ["", "ctrl_ns, microseconds. Non-control ticks (ctrl_ns==0) dropped. Same files.", ""]
+    lines += md_dist_table(rows, "ctrl", 1)
+    classed = [r for r in rows if "wake_ctrl" in r]
+    if classed:
+        lines += [
+            "",
+            "wake_err_ns by tick_class, microseconds. plain / ctrl / telem — "
+            "asks whether the heavier control tick pushes the following deadline.",
+            "",
+        ]
+        for key, label in (
+            ("wake_plain", "plain (tick_class==0)"),
+            ("wake_ctrl", "ctrl (TICK_CTRL)"),
+            ("wake_telem", "telem (TICK_TELEM)"),
+        ):
+            lines.append(f"{label}:")
+            lines += md_dist_table(
+                [{"name": r["name"], key: r[key]} for r in classed], key, 0
+            )
+            lines.append("")
     text = "\n".join(lines) + "\n"
     sys.stdout.write(text)
     with open(args.out, "w") as f:

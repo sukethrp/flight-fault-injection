@@ -253,7 +253,8 @@ class PercentilesTest(unittest.TestCase):
         self.assertIn("age_gps_ns, microseconds", text)
         self.assertIn("kAgeNone rows dropped", text)
         self.assertIn("rx_ns, microseconds", text)
-        self.assertEqual(text.count("| configuration | n | mean |"), 6)
+        self.assertIn("ctrl_ns, microseconds", text)
+        self.assertEqual(text.count("| configuration | n | mean |"), 7)
 
     def test_staleness_floor_is_8ms_for_imu(self):
         # ceil(7.5 ms / 4 ms) * 4 ms. same integer ceil as src/msg_slots.h.
@@ -338,6 +339,72 @@ class PercentilesTest(unittest.TestCase):
             row = summarize(path)
         self.assertEqual(row["rx"]["n"], 1000)
         self.assertAlmostEqual(row["rx"]["p50"], 12.0, places=1)
+
+    def test_ctrl_ns_excludes_zeros(self):
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        ctrl_ns = np.zeros(1000, dtype=np.int64)
+        tick = np.zeros(1000, dtype=np.int64)
+        # every 5th tick is control, with 2500 ns plumbing
+        ctrl_ns[::5] = 2500
+        tick[::5] = 1
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "ctrl.csv")
+            write_csv(
+                path,
+                wake_us,
+                rx_ns=np.zeros(1000, dtype=np.int64),
+                extra_meta=None,
+            )
+            # rewrite with ctrl_ns + tick_class columns
+            with open(path) as f:
+                lines = f.readlines()
+            meta = [l for l in lines if l.startswith("#")]
+            with open(path, "w") as f:
+                f.writelines(meta)
+                f.write(
+                    "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,ctrl_ns,flags,"
+                    "rx_count,seq_gaps,skew_ns,age_imu_ns,age_pos_ns,age_gps_ns,tick_class\n"
+                )
+                for i, us in enumerate(wake_us):
+                    ns = int(round(us * 1000.0))
+                    f.write(
+                        f"{i},0,{ns},0,0,{int(ctrl_ns[i])},0,0,0,0,"
+                        f"{AGE_NONE},{AGE_NONE},{AGE_NONE},{int(tick[i])}\n"
+                    )
+            row = summarize(path)
+        self.assertEqual(row["ctrl"]["n"], 200)
+        self.assertAlmostEqual(row["ctrl"]["p50"], 2.5, places=1)
+
+    def test_wake_split_by_tick_class(self):
+        n = 1000
+        wake_us = np.zeros(n, dtype=np.float64)
+        tick = np.zeros(n, dtype=np.int64)
+        # plain=1 µs, ctrl=10 µs, telem (also ctrl)=20 µs — splits must not dilute.
+        wake_us[:] = 1.0
+        tick[::5] = 1
+        wake_us[::5] = 10.0
+        tick[::25] = 3  # CTRL|TELEM
+        wake_us[::25] = 20.0
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "class.csv")
+            with open(path, "w") as f:
+                f.write("# label=class-split\n# scheduler_requested=1\n# scheduler_applied=1\n")
+                f.write(
+                    "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,ctrl_ns,flags,"
+                    "rx_count,seq_gaps,skew_ns,age_imu_ns,age_pos_ns,age_gps_ns,tick_class\n"
+                )
+                for i in range(n):
+                    ns = int(round(wake_us[i] * 1000.0))
+                    f.write(
+                        f"{i},0,{ns},0,0,0,0,0,0,0,"
+                        f"{AGE_NONE},{AGE_NONE},{AGE_NONE},{int(tick[i])}\n"
+                    )
+            row = summarize(path)
+        self.assertEqual(row["wake_plain"]["n"], 800)
+        self.assertAlmostEqual(row["wake_plain"]["mean"], 1.0, places=6)
+        self.assertEqual(row["wake_ctrl"]["n"], 200)
+        self.assertEqual(row["wake_telem"]["n"], 40)
+        self.assertAlmostEqual(row["wake_telem"]["mean"], 20.0, places=6)
 
 
 if __name__ == "__main__":
