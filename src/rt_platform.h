@@ -32,8 +32,7 @@ struct RtStatus {
     std::string note;
 };
 
-// Best effort, never aborts. The same binary runs unprivileged on a laptop and
-// privileged on the RT host.
+// Best effort, never aborts. Denied policy is recorded, not fatal.
 RtStatus apply(const RtConfig& cfg);
 
 void prefault_stack(size_t bytes = 512 * 1024);

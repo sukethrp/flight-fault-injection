@@ -465,3 +465,24 @@ something under results/ is also staged. Same file is installed as
 commit-msg: pre-commit runs before `git commit -m` writes the message,
 so a pre-commit-only check would miss the subject. That is the a650acb
 failure mode.
+
+## 2026-08-19 - one host, three rates
+
+No Linux mini PC, so no PREEMPT_RT curve, no isolcpus, no cyclictest,
+no two-host injector. The scheduling variable is Darwin
+`THREAD_TIME_CONSTRAINT_POLICY`. Sender, loop, and (later) injector share
+`rt::now_ns()` because they are one process tree; the clock-domain
+constraint is unchanged and now trivial. Linux paths in `rt_platform.cpp`
+stay, labelled untested.
+
+`udp_sender` emits HIGHRES_IMU / LOCAL_POSITION_NED / GPS_RAW_INT on one
+socket from one absolute-deadline loop at lcm(400, 50, 5) = 400 Hz.
+PX4 SITL is timeboxed; this fixture is the documented fallback.
+
+Slots are named IMU/POS/GPS members. MAVLink seq is per-component, so
+`last_seq` lives once on `MsgSlots`. Per-slot seq would count IMU→POS→GPS
+as drops. Age and `FLAG_STALE` are per slot against that type's period.
+Floors at 250 Hz, limit 3: IMU 8 ms, position 60 ms, GPS 600 ms.
+
+`rx_ns` stays drain+parse+slot. Not split, not renamed parse_ns. Phase 4
+adds `ekf_ns` / `ctrl_ns` beside it.
