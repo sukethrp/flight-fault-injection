@@ -82,12 +82,17 @@ while IFS= read -r f; do
     fi
 done <<< "$staged"
 
-if [[ -d build ]] && command -v cmake >/dev/null 2>&1; then
-    if ! cmake --build build >/tmp/ffi_build.log 2>&1; then
-        echo "pre-commit: build failed. tail of /tmp/ffi_build.log:"
-        tail -15 /tmp/ffi_build.log | sed 's/^/            /'
+# Build the index, not the working tree. cmake --build build green-lit
+# b96bc23 (and two neighbours) because unstaged files completed the compile.
+if command -v cmake >/dev/null 2>&1; then
+    tmp=$(mktemp -d)
+    git checkout-index -a -f --prefix="$tmp/"
+    if ! (cd "$tmp" && cmake -B build >/dev/null 2>&1 && cmake --build build >/dev/null 2>&1); then
+        echo "pre-commit: staged tree does not configure or build"
+        echo "            (your working tree may still be fine; a file is likely unstaged)"
         fail=1
     fi
+    rm -rf "$tmp"
 fi
 
 exit $fail

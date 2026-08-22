@@ -171,6 +171,7 @@ int main(int argc, char** argv) {
     uint8_t outbuf[MAVLINK_MAX_PACKET_LEN];
 
     int imu_acc = 0, pos_acc = 0, gps_acc = 0;
+    uint32_t setpoint_rx = 0;
     rt::prefault_stack();
     int64_t next = rt::now_ns() + period_ns;
 
@@ -200,6 +201,7 @@ int main(int argc, char** argv) {
                     a_cmd[1] = static_cast<double>(sp.afy) * scale;
                 if (!(sp.type_mask & POSITION_TARGET_TYPEMASK_AZ_IGNORE))
                     a_cmd[2] = static_cast<double>(sp.afz) * scale;
+                ++setpoint_rx;
             }
         }
 
@@ -289,6 +291,7 @@ int main(int argc, char** argv) {
         "gravity=" + std::to_string(plant::kGravity),
         "sensor_port=" + std::to_string(a.sensor_port),
         "setpoint_port=" + std::to_string(a.setpoint_port),
+        "setpoint_rx=" + std::to_string(setpoint_rx),
         "acc_noise=" + std::to_string(a.acc_noise),
         "gyro_noise=" + std::to_string(a.gyro_noise),
         "pos_noise=" + std::to_string(a.pos_noise),
@@ -301,6 +304,9 @@ int main(int argc, char** argv) {
         "memory_locked=" + std::string(rst.memory_locked ? "1" : "0"),
         "note=" + rst.note,
     };
+    const double sp_hz = a.seconds > 0 ? static_cast<double>(setpoint_rx) / a.seconds : 0.0;
+    std::fprintf(stderr, "plant: setpoint_rx=%u (%.2f Hz over %d s)\n",
+                 setpoint_rx, sp_hz, a.seconds);
     if (!a.truth_out.empty() && !write_truth(a.truth_out, meta, truth.data(), n_logged)) {
         std::fprintf(stderr, "could not write %s\n", a.truth_out.c_str());
         return 1;
