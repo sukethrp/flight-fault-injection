@@ -11,15 +11,15 @@ Companion project: [epuck-edge-ai](https://github.com/sukethrp/epuck-edge-ai),
 which measures on-device inference latency. This one asks what happens when that
 inference arrives late, wrong, or not at all.
 
-**Status:** step 2 of 7, IMU staleness accounting and in-run rx_ns
-bracketing. Empty cells below mean not measured yet, never estimated.
+**Status:** step 2 of 7, per-type slots and a three-rate MAVLink sender on
+macOS loopback. Empty cells below mean not measured yet, never estimated.
 
 ## Result
 
 Wake-up error in microseconds, 250 Hz loop. Identical application code in
-every row; the kernel and its scheduling policy are the only variable. Empty
-cells are not measured yet. macOS rows are six alternating 600-second runs
-pooled (`results/hour_ts_1.csv`–`hour_ts_6.csv`,
+every row; Darwin `THREAD_TIME_CONSTRAINT_POLICY` is the variable. macOS
+rows are six alternating 600-second runs pooled
+(`results/hour_ts_1.csv`–`hour_ts_6.csv`,
 `results/hour_rt_1.csv`–`hour_rt_6.csv`; percentiles in `results/pooled.md`).
 900,000 samples per configuration. Overruns are the sum of the `overruns=`
 header fields on those twelve files.
@@ -28,19 +28,14 @@ header fields on those twelve files.
 |---|---|---|---|---|---|---|---|
 | macOS, best effort | 900000 | 707 | 880 | 2028 | 8522 | 39127 | 613 |
 | macOS, THREAD_TIME_CONSTRAINT_POLICY | 900000 | 10 | 24 | 42 | 95 | 225 | 0 |
-| Linux, CFS | | | | | | | |
-| Linux, PREEMPT_RT, SCHED_FIFO, isolated core | | | | | | | |
-
-`cyclictest` on the same machine gives the platform floor, plotted as a
-reference line alongside these curves.
 
 ![Wake-error histogram](results/jitter.png)
 
 Log x and log y. First bin starts at 1 µs; smaller samples sit there.
 
 Socket drain, same RT policy, 600 s (`results/p2.md`). 400 Hz × 76-byte
-loopback UDP against a dummy sender; PX4 is still a later drop-in.
-`rx_total=240000` (1.6 per tick), `drain_full=36`.
+loopback UDP against a dummy sender. `rx_total=240000` (1.6 per tick),
+`drain_full=36`.
 
 | Configuration | Samples | p50 | p99 | p99.9 | p99.99 | max | rx_total | drain_full |
 |---|---|---|---|---|---|---|---|---|
@@ -103,19 +98,20 @@ Bound hit with skew improving or flat is sender coalescing. Bound hit
 with skew walking one loop period per tick is backlog; the stale leftover
 shows on the tick after the streak.
 
-Age is sampled at tick boundaries. The IMU stale limit is 7.5 ms
-(`expected_period * staleness_limit_periods`); the theoretical detection
-floor is 8 ms (`staleness_floor_ns` in the CSV header). The fault table
-Floor column is that number, once a fault is injected.
+Age is sampled at tick boundaries, per slot. At 250 Hz with
+`staleness_limit_periods=3` the theoretical detection floors
+(`ceil(limit / loop_period) * loop_period` in the CSV header) are IMU
+8 ms, position 60 ms, GPS 600 ms. The fault table Floor column is that
+number, once a fault is injected.
 
 ## Fault table
 
 Time-to-detect is measured from the injector stamping an event to a detector
-firing, both from the same monotonic clock. The injector runs on the real-time
-host beside the flight software for exactly this reason: across two machines the
-interval would be contaminated by clock offset. Floor is
-`ceil(limit / loop_period) * loop_period` from the run header, not a
-measured TTD.
+firing, both from the same monotonic clock. Injector, sender, and loop share
+one process tree on this Mac, so they share `rt::now_ns()` without a
+cross-machine epoch. Across two hosts the interval would be contaminated by
+clock offset. Floor is `ceil(limit / loop_period) * loop_period` from the
+run header, not a measured TTD.
 
 | Fault | Injection | Detector | TTD p50 | TTD p95 | TTD max | Floor | TTR | End state |
 |---|---|---|---|---|---|---|---|---|
@@ -126,20 +122,21 @@ Target structure. Files appear as their step lands.
 
 ```
 src/
-  rt_platform.h/.cpp   monotonic clock + RT scheduling, Linux and Darwin
+  rt_platform.h/.cpp   monotonic clock + RT scheduling (Darwin used; Linux retained, untested)
   ring_log.h           preallocated sample sink, no I/O in the loop
-  msg_slots.h          latest-value MAVLink payloads, named per msgid (step 2)
+  msg_slots.h          latest-value IMU/POS/GPS slots, named members (step 2)
   udp_rx.h/.cpp        non-blocking loopback bind and recv (step 2)
   loop_bench.cpp       the fixed-rate loop and its own instrumentation
   ekf.h/.cpp           6-state filter with NIS gating (step 4)
   detectors.h/.cpp     staleness, sequence, skew, divergence (step 6)
   failsafe.h/.cpp      fallback state machine (step 6)
-tools/udp_sender.cpp   HIGHRES_IMU v2 UDP source until PX4 SITL (step 2)
+tools/udp_sender.cpp   HIGHRES_IMU / LOCAL_POSITION_NED / GPS_RAW_INT on one socket (step 2)
+tools/plant.cpp        1 kHz RK4 plant, same three types plus setpoint socket (step 2e)
 third_party/mavlink    vendored MAVLink v2 headers (common dialect)
-injector/              MAVLink proxy, runs on the RT host (step 5)
+injector/              MAVLink proxy on loopback, same host (step 5)
 analysis/              percentile tables and figures
 scripts/pre-commit     hot path and authorship enforcement
-docs/DESIGN.md         sequencing, including why the socket is measured before PX4
+docs/DESIGN.md         sequencing, including why the socket is measured before the plant
 results/               gzipped CSVs and figures
 ```
 
@@ -148,34 +145,26 @@ results/               gzipped CSVs and figures
 ```bash
 cmake -B build && cmake --build build
 
-# smoke test, unprivileged, either platform
+# smoke test, unprivileged
 ./build/loop_bench --hz 250 --seconds 60 --label smoke --out results/smoke.csv
 
 # a real run. one hour at 250 Hz is 900k samples, which is what p99.99 needs.
-sudo ./build/loop_bench --hz 250 --seconds 3600 --core 3 --prio 80 \
-     --load-us 800 --label "linux rt" --out results/loop_linux_rt_250hz.csv
+./build/loop_bench --hz 250 --seconds 3600 --load-us 800 --rt \
+     --label "macos rt" --out results/loop_macos_rt_250hz.csv
 
-# platform floor, Linux only
-sudo cyclictest -m -a 3 -t 1 -p 80 -i 4000 -h 400 -q -D 1h > results/cyclictest_rt.txt
+# three-rate fixture on loopback (IMU 400 Hz, position 50 Hz, GPS 5 Hz)
+./build/udp_sender --port 14555 --seconds 60 &
+./build/loop_bench --hz 250 --seconds 60 --rt --port 14555 \
+     --out results/loop_mav.csv
+
+# plant fixture, open loop. no controller; free-fall on D. --rt is opt-in.
+./build/plant --seconds 10 --sensor-port 14555 --truth-out results/plant_truth.csv
 ```
 
 `loop_bench` never aborts when it cannot get the scheduling policy it asked for.
 It records what actually stuck in the CSV header, and the analysis warns on any
 curve where real-time scheduling was requested and denied, so a figure cannot
 silently claim a configuration it did not have.
-
-## Kernel setup, Linux RT host
-
-```
-isolcpus=3 nohz_full=3 rcu_nocbs=3 intel_idle.max_cstate=1 idle=poll
-cpupower frequency-set -g performance
-```
-
-Isolating the core is what separates this from a loop that merely asks nicely.
-`nohz_full` stops the timer tick there, `rcu_nocbs` moves RCU callbacks off it,
-and the C-state and governor settings stop the CPU sleeping or downclocking
-between periods, which produces tens-of-microseconds outliers that look exactly
-like scheduler jitter and are not.
 
 ## Limitations
 
@@ -185,3 +174,9 @@ like scheduler jitter and are not.
   to be portable to one, which is a later upgrade, not a prerequisite.
 - macOS cannot pin a thread to a core, and `mlockall` typically fails there
   without root. The macOS curve is a best-effort baseline, labelled as such.
+- PREEMPT_RT, SCHED_FIFO, isolcpus, and a Linux CFS comparison are out of
+  scope. There is no Linux host for this project.
+- The simulated plant and the flight software run on one Mac over loopback.
+  There is no second machine.
+- `cyclictest` platform-floor numbers are unavailable. That tool is Linux-only
+  and there is no Linux host to run it on.

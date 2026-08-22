@@ -94,12 +94,16 @@ namespace rt {
 const char* platform_name() { return "linux"; }
 
 int64_t now_ns() {
+    // untested: no Linux host exists for this project. retained so the
+    // platform layer stays honest about what it was designed for.
     timespec ts{};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
 }
 
 void sleep_until_ns(int64_t deadline_ns) {
+    // untested: no Linux host exists for this project. retained so the
+    // platform layer stays honest about what it was designed for.
     timespec ts{};
     ts.tv_sec  = static_cast<time_t>(deadline_ns / 1000000000LL);
     ts.tv_nsec = static_cast<long>(deadline_ns % 1000000000LL);
@@ -109,6 +113,8 @@ void sleep_until_ns(int64_t deadline_ns) {
 }
 
 RtStatus apply(const RtConfig& cfg) {
+    // untested: no Linux host exists for this project. retained so the
+    // platform layer stays honest about what it was designed for.
     RtStatus st;
 
     if (cfg.scheduler_requested) {
