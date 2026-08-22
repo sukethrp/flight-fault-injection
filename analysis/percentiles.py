@@ -16,7 +16,9 @@ def parse_csv(path):
     wake = []
     exec_us = []
     rx_us = []
-    age_us = []
+    age_imu_us = []
+    age_pos_us = []
+    age_gps_us = []
     flags = []
     header = None
     opener = gzip.open if path.endswith(".gz") else open
@@ -42,10 +44,19 @@ def parse_csv(path):
                 exec_us.append(float(parts[3]) / 1000.0)
             if "rx_ns" in rec:
                 rx_us.append(float(rec["rx_ns"]) / 1000.0)
-            if "age_ns" in rec:
-                v = int(rec["age_ns"])
+            imu_key = "age_imu_ns" if "age_imu_ns" in rec else "age_ns" if "age_ns" in rec else None
+            if imu_key is not None:
+                v = int(rec[imu_key])
                 if v != AGE_NONE:
-                    age_us.append(v / 1000.0)
+                    age_imu_us.append(v / 1000.0)
+            if "age_pos_ns" in rec:
+                v = int(rec["age_pos_ns"])
+                if v != AGE_NONE:
+                    age_pos_us.append(v / 1000.0)
+            if "age_gps_ns" in rec:
+                v = int(rec["age_gps_ns"])
+                if v != AGE_NONE:
+                    age_gps_us.append(v / 1000.0)
             if "flags" in rec:
                 flags.append(int(rec["flags"]))
     return (
@@ -53,8 +64,10 @@ def parse_csv(path):
         np.asarray(wake, dtype=np.float64),
         np.asarray(exec_us, dtype=np.float64),
         np.asarray(rx_us, dtype=np.float64),
-        np.asarray(age_us, dtype=np.float64),
+        np.asarray(age_imu_us, dtype=np.float64),
         np.asarray(flags, dtype=np.int64),
+        np.asarray(age_pos_us, dtype=np.float64),
+        np.asarray(age_gps_us, dtype=np.float64),
     )
 
 
@@ -156,8 +169,18 @@ def warn_tail(path, label, stats):
         )
 
 
+def meta_int(meta, key, default=0):
+    raw = meta.get(key)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def summarize(path):
-    meta, a, exec_us, rx_us, age_us, flags = parse_csv(path)
+    meta, a, exec_us, rx_us, age_imu_us, flags, age_pos_us, age_gps_us = parse_csv(path)
     n = a.size
     name = display_name(meta, path)
     warn_if_denied(path, meta, name)
@@ -165,14 +188,20 @@ def summarize(path):
     wake = dist_stats(a)
     exec_d = dist_stats(exec_us)
     rx_d = dist_stats(rx_us)
-    age_d = dist_stats(age_us)
+    age_imu_d = dist_stats(age_imu_us)
+    age_pos_d = dist_stats(age_pos_us)
+    age_gps_d = dist_stats(age_gps_us)
     warn_tail(path, "wake_err_ns", wake)
     if exec_d["n"] != wake["n"]:
         warn_tail(path, "exec_ns", exec_d)
     if rx_d["n"] > 0 and rx_d["n"] != wake["n"]:
         warn_tail(path, "rx_ns", rx_d)
-    if age_d["n"] > 0 and age_d["n"] != wake["n"]:
-        warn_tail(path, "age_ns", age_d)
+    if age_imu_d["n"] > 0 and age_imu_d["n"] != wake["n"]:
+        warn_tail(path, "age_imu_ns", age_imu_d)
+    if age_pos_d["n"] > 0 and age_pos_d["n"] != wake["n"]:
+        warn_tail(path, "age_pos_ns", age_pos_d)
+    if age_gps_d["n"] > 0 and age_gps_d["n"] != wake["n"]:
+        warn_tail(path, "age_gps_ns", age_gps_d)
     stale_n = int(np.count_nonzero(flags & FLAG_STALE)) if flags.size else 0
     return {
         "path": path,
@@ -190,8 +219,14 @@ def summarize(path):
         "wake": wake,
         "exec": exec_d,
         "rx": rx_d,
-        "age": age_d,
+        "age": age_imu_d,
+        "age_imu": age_imu_d,
+        "age_pos": age_pos_d,
+        "age_gps": age_gps_d,
         "stale_n": stale_n,
+        "stale_imu": meta_int(meta, "stale_imu", stale_n),
+        "stale_pos": meta_int(meta, "stale_pos"),
+        "stale_gps": meta_int(meta, "stale_gps"),
         "wake_us": a,
         "meta": meta,
     }
@@ -228,8 +263,12 @@ def main():
     lines += md_dist_table(rows, "exec", 1)
     lines += ["", "rx_ns, microseconds. Drain+parse+slot in-run. Same files.", ""]
     lines += md_dist_table(rows, "rx", 1)
-    lines += ["", "age_ns, microseconds. kAgeNone rows dropped. Same files.", ""]
-    lines += md_dist_table(rows, "age", 1)
+    lines += ["", "age_imu_ns, microseconds. kAgeNone rows dropped. Same files.", ""]
+    lines += md_dist_table(rows, "age_imu", 1)
+    lines += ["", "age_pos_ns, microseconds. kAgeNone rows dropped. Same files.", ""]
+    lines += md_dist_table(rows, "age_pos", 1)
+    lines += ["", "age_gps_ns, microseconds. kAgeNone rows dropped. Same files.", ""]
+    lines += md_dist_table(rows, "age_gps", 1)
     text = "\n".join(lines) + "\n"
     sys.stdout.write(text)
     with open(args.out, "w") as f:

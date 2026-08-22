@@ -33,6 +33,9 @@ def write_csv(
     flags=None,
     rx_ns=None,
     extra_meta=None,
+    age_imu_ns=None,
+    age_pos_ns=None,
+    age_gps_ns=None,
 ):
     with open(path, "w") as f:
         f.write("# platform=test\n")
@@ -45,7 +48,13 @@ def write_csv(
         if extra_meta:
             for k, v in extra_meta:
                 f.write(f"# {k}={v}\n")
-        if rx_ns is not None:
+        typed = age_imu_ns is not None or age_pos_ns is not None or age_gps_ns is not None
+        if typed:
+            f.write(
+                "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,flags,rx_count,seq_gaps,skew_ns,"
+                "age_imu_ns,age_pos_ns,age_gps_ns\n"
+            )
+        elif rx_ns is not None:
             f.write(
                 "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,flags,rx_count,seq_gaps,skew_ns,age_ns\n"
             )
@@ -61,7 +70,15 @@ def write_csv(
         for i, us in enumerate(wake_us):
             ns = int(round(us * 1000.0))
             fl = 0 if flags is None else int(flags[i])
-            if rx_ns is not None:
+            if typed:
+                rx = 0 if rx_ns is None else int(rx_ns[i])
+                imu = AGE_NONE if age_imu_ns is None else int(age_imu_ns[i])
+                pos = AGE_NONE if age_pos_ns is None else int(age_pos_ns[i])
+                gps = AGE_NONE if age_gps_ns is None else int(age_gps_ns[i])
+                f.write(
+                    f"{i},0,{ns},{exec_ns[i]},{rx},{fl},0,0,0,{imu},{pos},{gps}\n"
+                )
+            elif rx_ns is not None:
                 age = 0 if age_ns is None else int(age_ns[i])
                 f.write(
                     f"{i},0,{ns},{exec_ns[i]},{int(rx_ns[i])},{fl},0,0,0,{age}\n"
@@ -196,7 +213,7 @@ class PercentilesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             path = os.path.join(td, "age.csv")
             write_csv(path, wake_us, age_ns=age_ns)
-            _, _, _, _, age, flags = parse_csv(path)
+            _, _, _, _, age, flags, *_ = parse_csv(path)
         self.assertEqual(age.size, 90)
         self.assertTrue(np.allclose(age, 1.0))
         self.assertEqual(flags.size, 100)
@@ -231,10 +248,12 @@ class PercentilesTest(unittest.TestCase):
                 main()
         text = stdout.getvalue()
         self.assertIn("exec_ns, microseconds", text)
-        self.assertIn("age_ns, microseconds", text)
+        self.assertIn("age_imu_ns, microseconds", text)
+        self.assertIn("age_pos_ns, microseconds", text)
+        self.assertIn("age_gps_ns, microseconds", text)
         self.assertIn("kAgeNone rows dropped", text)
         self.assertIn("rx_ns, microseconds", text)
-        self.assertEqual(text.count("| configuration | n | mean |"), 4)
+        self.assertEqual(text.count("| configuration | n | mean |"), 6)
 
     def test_staleness_floor_is_8ms_for_imu(self):
         # ceil(7.5 ms / 4 ms) * 4 ms. same integer ceil as src/msg_slots.h.
@@ -246,6 +265,19 @@ class PercentilesTest(unittest.TestCase):
         self.assertLess(period_ns, limit_ns)
         self.assertGreater(2 * period_ns, limit_ns)
 
+    def test_per_type_staleness_floors_at_250hz(self):
+        period_ns = 4_000_000
+        lim = 3
+        imu_limit = lim * 2_500_000
+        pos_limit = lim * 20_000_000
+        gps_limit = lim * 200_000_000
+        imu_floor = ((imu_limit + period_ns - 1) // period_ns) * period_ns
+        pos_floor = ((pos_limit + period_ns - 1) // period_ns) * period_ns
+        gps_floor = ((gps_limit + period_ns - 1) // period_ns) * period_ns
+        self.assertEqual(imu_floor, 8_000_000)
+        self.assertEqual(pos_floor, 60_000_000)
+        self.assertEqual(gps_floor, 600_000_000)
+
     def test_staleness_floor_ns_in_metadata(self):
         wake_us = np.linspace(1.0, 100.0, 100)
         with tempfile.TemporaryDirectory() as td:
@@ -255,12 +287,47 @@ class PercentilesTest(unittest.TestCase):
                 wake_us,
                 extra_meta=[
                     ("staleness_limit_periods", "3"),
-                    ("staleness_floor_ns", "8000000"),
+                    ("staleness_floor_imu_ns", "8000000"),
+                    ("staleness_floor_pos_ns", "60000000"),
+                    ("staleness_floor_gps_ns", "600000000"),
+                    ("stale_imu", "0"),
+                    ("stale_pos", "2"),
+                    ("stale_gps", "4"),
                 ],
             )
             row = summarize(path)
         self.assertEqual(row["meta"]["staleness_limit_periods"], "3")
-        self.assertEqual(row["meta"]["staleness_floor_ns"], "8000000")
+        self.assertEqual(row["meta"]["staleness_floor_imu_ns"], "8000000")
+        self.assertEqual(row["meta"]["staleness_floor_pos_ns"], "60000000")
+        self.assertEqual(row["meta"]["staleness_floor_gps_ns"], "600000000")
+        self.assertEqual(row["stale_imu"], 0)
+        self.assertEqual(row["stale_pos"], 2)
+        self.assertEqual(row["stale_gps"], 4)
+
+    def test_per_type_age_tables(self):
+        wake_us = np.linspace(1.0, 100.0, 1000)
+        age_imu = np.full(1000, 1000)
+        age_pos = np.full(1000, 20000)
+        age_gps = [400000] * 900 + [AGE_NONE] * 100
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "typed.csv")
+            write_csv(
+                path,
+                wake_us,
+                age_imu_ns=age_imu,
+                age_pos_ns=age_pos,
+                age_gps_ns=age_gps,
+            )
+            row = summarize(path)
+        self.assertEqual(row["age_imu"]["n"], 1000)
+        self.assertEqual(row["age_pos"]["n"], 1000)
+        self.assertEqual(row["age_gps"]["n"], 900)
+        self.assertAlmostEqual(row["age_imu"]["p50"], 1.0, places=1)
+        self.assertAlmostEqual(row["age_pos"]["p50"], 20.0, places=1)
+        self.assertIsNotNone(row["age_imu"]["p50"])
+        self.assertIsNotNone(row["age_imu"]["p99"])
+        self.assertIsNone(row["age_imu"]["p999"])
+        self.assertIsNone(row["age_imu"]["p9999"])
 
     def test_rx_ns_table(self):
         wake_us = np.linspace(1.0, 100.0, 1000)
