@@ -1,0 +1,2 @@
+proxy passthrough=1 listen_plant=14550→14555 listen_loop=14551→14556 faults=0 seed=1
+proxy done: fwd_loop=36278 fwd_plant=3400 drop=0 delay=0 reorder=0 events=0

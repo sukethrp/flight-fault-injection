@@ -1,0 +1,8 @@
+results/p5_base.csv: wake_err_ns n=15000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_base.csv: ctrl_ns n=3000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_base.csv: ctrl_ns n=3000, p99.9 n/a (need ~10 samples above it)
+results/p5_pt.csv: wake_err_ns n=15000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_pt.csv: ctrl_ns n=3000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_pt.csv: ctrl_ns n=3000, p99.9 n/a (need ~10 samples above it)
+results/p3_closed.csv: wake_err_ns n=60000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p3_closed.csv: ctrl_ns n=12000, p99.99 needs ~100000 samples (400s at 250 Hz)

@@ -1,0 +1,3 @@
+results/p5_base.csv: wake_err_ns n=15000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_base.csv: ctrl_ns n=3000, p99.99 needs ~100000 samples (400s at 250 Hz)
+results/p5_base.csv: ctrl_ns n=3000, p99.9 n/a (need ~10 samples above it)

@@ -1,0 +1,1 @@
+results/p5_base.csv: 15000 samples, 0 overruns, 0 rebases, 27300 rx, 0 drain_full, 27300 parse_ok, 0 seq_gaps, 0 stale, 0 stale_imu, 0 stale_pos, 0 stale_gps, 3400 ctrl, 680 telem, 3400 setpoint_tx, 0 setpoint_tx_drop, 0 fsm_events

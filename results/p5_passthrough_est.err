@@ -1,0 +1,2 @@
+usage: estimator_error.py [-h] --out OUT loop_csv truth_csv
+estimator_error.py: error: unrecognized arguments: --pair results/p5_base_truth.csv --pair passthrough results/p5_pt.csv results/p5_pt_truth.csv
