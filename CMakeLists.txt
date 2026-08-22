@@ -35,5 +35,25 @@ target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)
 add_executable(udp_sender tools/udp_sender.cpp)
 target_link_libraries(udp_sender PRIVATE rt_platform)
 
+add_executable(plant tools/plant.cpp)
+target_link_libraries(plant PRIVATE rt_platform)
+target_include_directories(plant PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
 add_executable(test_msg_slots tests/test_msg_slots.cpp)
 target_link_libraries(test_msg_slots PRIVATE rt_platform)
+
+add_executable(test_udp_sender tests/test_udp_sender.cpp)
+target_link_libraries(test_udp_sender PRIVATE rt_platform)
+target_compile_definitions(test_udp_sender PRIVATE
+  "UDP_SENDER_PATH=\"$<TARGET_FILE:udp_sender>\"")
+add_dependencies(test_udp_sender udp_sender)
+
+add_executable(test_plant tests/test_plant.cpp)
+target_include_directories(test_plant PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+enable_testing()
+add_test(NAME test_msg_slots COMMAND test_msg_slots)
+add_test(NAME test_udp_sender COMMAND test_udp_sender)
+add_test(NAME test_plant COMMAND test_plant)
+add_test(NAME test_percentiles COMMAND python3
+  "${CMAKE_SOURCE_DIR}/analysis/test_percentiles.py")
