@@ -81,6 +81,9 @@ int main(int argc, char** argv) {
     uint32_t parse_ok    = 0;
     uint32_t seq_gaps    = 0;
     uint32_t stales      = 0;
+    uint32_t stale_imu   = 0;
+    uint32_t stale_pos   = 0;
+    uint32_t stale_gps   = 0;
 
     rt::RtConfig cfg;
     cfg.priority             = a.prio;
@@ -98,8 +101,12 @@ int main(int argc, char** argv) {
     mavlink_status_t  mav_status{};
     MsgSlots slots{};
     slots.imu.expected_period_ns = kImuPeriodNs;
+    slots.pos.expected_period_ns = kPosPeriodNs;
+    slots.gps.expected_period_ns = kGpsPeriodNs;
     const int64_t stale_lim = static_cast<int64_t>(a.staleness_limit_periods);
-    const int64_t stale_floor_ns = staleness_floor_ns(kImuPeriodNs * stale_lim, period_ns);
+    const int64_t imu_floor_ns = staleness_floor_ns(kImuPeriodNs * stale_lim, period_ns);
+    const int64_t pos_floor_ns = staleness_floor_ns(kPosPeriodNs * stale_lim, period_ns);
+    const int64_t gps_floor_ns = staleness_floor_ns(kGpsPeriodNs * stale_lim, period_ns);
     int sock = -1;
     if (a.port > 0) {
         sock = udp_bind_nonblocking(a.port);
@@ -133,21 +140,33 @@ int main(int argc, char** argv) {
                             static_cast<uint8_t>(rxbuf[b]),
                             &mav_msg, &mav_status)) {
                         ++parsed;
+                        // seq is uint8_t; without the mask, 255->0 is -256 not 0.
+                        // component-wide: per-slot last_seq would flag IMU→POS as a drop.
+                        gaps = static_cast<uint16_t>(
+                            gaps + note_component_seq(slots, mav_msg.seq));
                         switch (mav_msg.msgid) {
                         case MAVLINK_MSG_ID_HIGHRES_IMU: {
                             ImuSlot& imu = slots.imu;
-                            if (imu.valid) {
-                                // seq is uint8_t; without the mask, 255->0 is -256 not 0.
-                                const uint8_t g = static_cast<uint8_t>(
-                                    (mav_msg.seq - imu.last_seq - 1) & 0xFF);
-                                imu.seq_gaps += g;
-                                gaps = static_cast<uint16_t>(gaps + g);
-                            }
                             mavlink_msg_highres_imu_decode(&mav_msg, &imu.payload);
                             imu.rx_mono_ns = woke;
                             imu.sender_us  = imu.payload.time_usec;
-                            imu.last_seq   = mav_msg.seq;
                             imu.valid      = true;
+                            break;
+                        }
+                        case MAVLINK_MSG_ID_LOCAL_POSITION_NED: {
+                            PosSlot& pos = slots.pos;
+                            mavlink_msg_local_position_ned_decode(&mav_msg, &pos.payload);
+                            pos.rx_mono_ns = woke;
+                            pos.sender_us  = static_cast<uint64_t>(pos.payload.time_boot_ms) * 1000ull;
+                            pos.valid      = true;
+                            break;
+                        }
+                        case MAVLINK_MSG_ID_GPS_RAW_INT: {
+                            GpsSlot& gps = slots.gps;
+                            mavlink_msg_gps_raw_int_decode(&mav_msg, &gps.payload);
+                            gps.rx_mono_ns = woke;
+                            gps.sender_us  = gps.payload.time_usec;
+                            gps.valid      = true;
                             break;
                         }
                         default:
@@ -172,16 +191,34 @@ int main(int argc, char** argv) {
         s.rx_count    = rx;
         s.seq_gaps    = gaps;
         s.skew_ns     = kSkewNone;
-        s.age_ns      = kAgeNone;
+        s.age_imu_ns  = kAgeNone;
+        s.age_pos_ns  = kAgeNone;
+        s.age_gps_ns  = kAgeNone;
         if (slots.imu.valid && slots.imu.rx_mono_ns == woke) {
             s.skew_ns = static_cast<int32_t>(
                 static_cast<int64_t>(slots.imu.sender_us * 1000ull) - slots.imu.rx_mono_ns);
         }
         if (slots.imu.valid) {
             slots.imu.age_ns = woke - slots.imu.rx_mono_ns;
-            s.age_ns = slots.imu.age_ns;
+            s.age_imu_ns = slots.imu.age_ns;
             if (slots.imu.expected_period_ns > 0 &&
                 slots.imu.age_ns > slots.imu.expected_period_ns * stale_lim) {
+                s.flags |= FLAG_STALE;
+            }
+        }
+        if (slots.pos.valid) {
+            slots.pos.age_ns = woke - slots.pos.rx_mono_ns;
+            s.age_pos_ns = slots.pos.age_ns;
+            if (slots.pos.expected_period_ns > 0 &&
+                slots.pos.age_ns > slots.pos.expected_period_ns * stale_lim) {
+                s.flags |= FLAG_STALE;
+            }
+        }
+        if (slots.gps.valid) {
+            slots.gps.age_ns = woke - slots.gps.rx_mono_ns;
+            s.age_gps_ns = slots.gps.age_ns;
+            if (slots.gps.expected_period_ns > 0 &&
+                slots.gps.age_ns > slots.gps.expected_period_ns * stale_lim) {
                 s.flags |= FLAG_STALE;
             }
         }
@@ -204,6 +241,15 @@ int main(int argc, char** argv) {
             if (s.flags & FLAG_REBASED)    ++rebases;
             if (s.flags & FLAG_DRAIN_FULL) ++drain_fulls;
             if (s.flags & FLAG_STALE)      ++stales;
+            if (s.age_imu_ns != kAgeNone &&
+                slots.imu.expected_period_ns > 0 &&
+                s.age_imu_ns > slots.imu.expected_period_ns * stale_lim) ++stale_imu;
+            if (s.age_pos_ns != kAgeNone &&
+                slots.pos.expected_period_ns > 0 &&
+                s.age_pos_ns > slots.pos.expected_period_ns * stale_lim) ++stale_pos;
+            if (s.age_gps_ns != kAgeNone &&
+                slots.gps.expected_period_ns > 0 &&
+                s.age_gps_ns > slots.gps.expected_period_ns * stale_lim) ++stale_gps;
             rx_total += rx;
             parse_ok += parsed;
             seq_gaps += gaps;
@@ -231,9 +277,16 @@ int main(int argc, char** argv) {
         "parse_ok=" + std::to_string(parse_ok),
         "seq_gaps=" + std::to_string(seq_gaps),
         "staleness_limit_periods=" + std::to_string(a.staleness_limit_periods),
-        "staleness_floor_ns=" + std::to_string(stale_floor_ns),
+        "staleness_floor_imu_ns=" + std::to_string(imu_floor_ns),
+        "staleness_floor_pos_ns=" + std::to_string(pos_floor_ns),
+        "staleness_floor_gps_ns=" + std::to_string(gps_floor_ns),
         "imu_period_ns=" + std::to_string(kImuPeriodNs),
+        "pos_period_ns=" + std::to_string(kPosPeriodNs),
+        "gps_period_ns=" + std::to_string(kGpsPeriodNs),
         "stale=" + std::to_string(stales),
+        "stale_imu=" + std::to_string(stale_imu),
+        "stale_pos=" + std::to_string(stale_pos),
+        "stale_gps=" + std::to_string(stale_gps),
         "computation_ns=" + std::to_string(st.computation_ns),
         "constraint_ns=" + std::to_string(st.constraint_ns),
         "preemptible=" + std::to_string(st.preemptible),
@@ -249,7 +302,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr,
-                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps, %u stale\n",
-                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps, stales);
+                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps, %u stale, %u stale_imu, %u stale_pos, %u stale_gps\n",
+                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps, stales,
+                 stale_imu, stale_pos, stale_gps);
     return 0;
 }
