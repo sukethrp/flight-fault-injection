@@ -1,6 +1,9 @@
+#include "control.h"
 #include "msg_slots.h"
 #include "ring_log.h"
 #include "rt_platform.h"
+#include "setpoint_tx.h"
+#include "trajectory.h"
 #include "udp_rx.h"
 
 #include <cstdio>
@@ -19,6 +22,7 @@ struct Args {
     int         prio    = 80;
     int         core    = -1;
     int         port    = 0;
+    int         setpoint_port = 0;
     int         computation_us = 0;
     int         constraint_us  = 0;
     int         staleness_limit_periods = 3;
@@ -27,15 +31,20 @@ struct Args {
     std::string out = "results/loop.csv";
 };
 
-// 400 Hz sender / 250 Hz loop = 1.6 datagrams per tick. 8 is 5× that mean,
-// enough to absorb a 20 ms burst (400 × 0.020) without an unbounded recv.
+// 400 Hz sender / 250 Hz loop = 1.6 datagrams per tick. 8 is 5x that mean,
+// enough to absorb a 20 ms burst (400 x 0.020) without an unbounded recv.
 constexpr uint16_t kMaxMsgsPerTick = 8;
+constexpr uint16_t kCtrlEvery      = 5;   // 250/5 = 50 Hz
+constexpr uint16_t kTelemEvery     = 25;  // 250/25 = 10 Hz
 
 bool parse(int argc, char** argv, Args& a) {
     for (int i = 1; i < argc; ++i) {
         const std::string f = argv[i];
         auto next = [&]() -> const char* {
-            if (i + 1 >= argc) { std::fprintf(stderr, "%s needs a value\n", f.c_str()); std::exit(2); }
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "%s needs a value\n", f.c_str());
+                std::exit(2);
+            }
             return argv[++i];
         };
         if      (f == "--hz")      a.hz      = std::atoi(next());
@@ -47,11 +56,16 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--rt")      a.rt      = true;
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
-        else if (f == "--port")    a.port     = std::atoi(next());
+        else if (f == "--port")    a.port    = std::atoi(next());
+        else if (f == "--setpoint-port") a.setpoint_port = std::atoi(next());
         else if (f == "--computation-us") a.computation_us = std::atoi(next());
         else if (f == "--constraint-us")  a.constraint_us  = std::atoi(next());
-        else if (f == "--staleness-limit-periods") a.staleness_limit_periods = std::atoi(next());
-        else { std::fprintf(stderr, "unknown flag %s\n", f.c_str()); return false; }
+        else if (f == "--staleness-limit-periods") {
+            a.staleness_limit_periods = std::atoi(next());
+        } else {
+            std::fprintf(stderr, "unknown flag %s\n", f.c_str());
+            return false;
+        }
     }
     return a.hz > 0 && a.seconds > 0 && a.staleness_limit_periods > 0;
 }
@@ -72,8 +86,9 @@ int main(int argc, char** argv) {
     const int64_t period_ns = 1000000000LL / a.hz;
     const int64_t load_ns   = static_cast<int64_t>(a.load_us) * 1000LL;
     const size_t  total     = static_cast<size_t>(a.hz) * a.seconds + a.warmup;
+    const float   ctrl_dt   = static_cast<float>(period_ns * kCtrlEvery) * 1e-9f;
 
-    RingLog  log(total - a.warmup + 16);
+    RingLog  log(total - static_cast<size_t>(a.warmup) + 16);
     uint32_t overruns    = 0;
     uint32_t rebases     = 0;
     uint32_t rx_total    = 0;
@@ -84,14 +99,18 @@ int main(int argc, char** argv) {
     uint32_t stale_imu   = 0;
     uint32_t stale_pos   = 0;
     uint32_t stale_gps   = 0;
+    uint32_t ctrl_ticks      = 0;
+    uint32_t telem_ticks     = 0;
+    uint32_t setpoint_tx     = 0;  // successful sends; compare to plant setpoint_rx
+    uint32_t setpoint_tx_drop = 0; // EAGAIN / short write; not inferred from tick math
 
-    rt::RtConfig cfg;
-    cfg.priority             = a.prio;
-    cfg.core                 = a.core;
-    cfg.period_ns            = period_ns;
-    cfg.computation_ns       = static_cast<int64_t>(a.computation_us) * 1000LL;
-    cfg.constraint_ns        = static_cast<int64_t>(a.constraint_us) * 1000LL;
-    cfg.scheduler_requested  = a.rt;
+    rt::RtConfig cfg{};
+    cfg.priority            = a.prio;
+    cfg.core                = a.core;
+    cfg.period_ns           = period_ns;
+    cfg.computation_ns      = static_cast<int64_t>(a.computation_us) * 1000LL;
+    cfg.constraint_ns       = static_cast<int64_t>(a.constraint_us) * 1000LL;
+    cfg.scheduler_requested = a.rt;
     const rt::RtStatus st = rt::apply(cfg);
 
     char rxbuf[512]{};
@@ -107,6 +126,7 @@ int main(int argc, char** argv) {
     const int64_t imu_floor_ns = staleness_floor_ns(kImuPeriodNs * stale_lim, period_ns);
     const int64_t pos_floor_ns = staleness_floor_ns(kPosPeriodNs * stale_lim, period_ns);
     const int64_t gps_floor_ns = staleness_floor_ns(kGpsPeriodNs * stale_lim, period_ns);
+
     int sock = -1;
     if (a.port > 0) {
         sock = udp_bind_nonblocking(a.port);
@@ -116,8 +136,20 @@ int main(int argc, char** argv) {
         }
     }
 
-    rt::prefault_stack();
+    Controller controller;
+    SetpointTx sp_tx;
+    if (a.setpoint_port > 0) {
+        if (!sp_tx.open(a.setpoint_port)) {
+            std::fprintf(stderr, "could not open setpoint UDP %d\n", a.setpoint_port);
+            if (sock >= 0) close(sock);
+            return 1;
+        }
+    }
 
+    uint16_t ctrl_div  = 0;
+    uint16_t telem_div = 0;
+
+    rt::prefault_stack();
     int64_t next = rt::now_ns() + period_ns;
 
     // HOT PATH BEGIN
@@ -141,7 +173,7 @@ int main(int argc, char** argv) {
                             &mav_msg, &mav_status)) {
                         ++parsed;
                         // seq is uint8_t; without the mask, 255->0 is -256 not 0.
-                        // component-wide: per-slot last_seq would flag IMU→POS as a drop.
+                        // component-wide: per-slot last_seq would flag IMU->POS as a drop.
                         gaps = static_cast<uint16_t>(
                             gaps + note_component_seq(slots, mav_msg.seq));
                         switch (mav_msg.msgid) {
@@ -178,6 +210,47 @@ int main(int argc, char** argv) {
             rx_ns = static_cast<int32_t>(rt::now_ns() - t0);
         }
 
+        uint8_t tick_class = 0;
+        int32_t ctrl_ns = 0;
+        ++ctrl_div;
+        ++telem_div;
+        if (ctrl_div >= kCtrlEvery) {
+            ctrl_div = 0;
+            tick_class = static_cast<uint8_t>(tick_class | TICK_CTRL);
+            const int64_t c0 = rt::now_ns();
+            float pos[3] = {0.0f, 0.0f, 0.0f};
+            float vel[3] = {0.0f, 0.0f, 0.0f};
+            if (slots.pos.valid) {
+                pos[0] = slots.pos.payload.x;
+                pos[1] = slots.pos.payload.y;
+                pos[2] = slots.pos.payload.z;
+                vel[0] = slots.pos.payload.vx;
+                vel[1] = slots.pos.payload.vy;
+                vel[2] = slots.pos.payload.vz;
+            }
+            // ctrl_ticks is the trajectory clock: same index → same setpoint,
+            // independent of when the process started.
+            float pos_sp[3];
+            trajectory_setpoint(ctrl_ticks, pos_sp);
+            const AccelCmd cmd = controller.update(pos, vel, pos_sp, ctrl_dt);
+            if (a.setpoint_port > 0) {
+                // Count the socket result, not the tick. Tick arithmetic can
+                // match plant rx while still hiding EAGAIN drops.
+                if (sp_tx.send_accel_setpoint(cmd.ax, cmd.ay, cmd.az)) {
+                    ++setpoint_tx;
+                } else {
+                    ++setpoint_tx_drop;
+                }
+            }
+            ctrl_ns = static_cast<int32_t>(rt::now_ns() - c0);
+            ++ctrl_ticks;
+        }
+        if (telem_div >= kTelemEvery) {
+            telem_div = 0;
+            tick_class = static_cast<uint8_t>(tick_class | TICK_TELEM);
+            ++telem_ticks;
+        }
+
         busy_ns(load_ns);
 
         const int64_t done = rt::now_ns();
@@ -187,6 +260,7 @@ int main(int argc, char** argv) {
         s.wake_err_ns = static_cast<int32_t>(woke - next);
         s.exec_ns     = static_cast<int32_t>(done - woke);
         s.rx_ns       = rx_ns;
+        s.ctrl_ns = ctrl_ns;
         s.seq         = static_cast<uint32_t>(i);
         s.rx_count    = rx;
         s.seq_gaps    = gaps;
@@ -194,6 +268,7 @@ int main(int argc, char** argv) {
         s.age_imu_ns  = kAgeNone;
         s.age_pos_ns  = kAgeNone;
         s.age_gps_ns  = kAgeNone;
+        s.tick_class = tick_class;
         if (slots.imu.valid && slots.imu.rx_mono_ns == woke) {
             s.skew_ns = static_cast<int32_t>(
                 static_cast<int64_t>(slots.imu.sender_us * 1000ull) - slots.imu.rx_mono_ns);
@@ -238,9 +313,9 @@ int main(int argc, char** argv) {
 
         if (i >= static_cast<size_t>(a.warmup)) {
             if (s.flags & FLAG_OVERRUN)    ++overruns;
-            if (s.flags & FLAG_REBASED)    ++rebases;
-            if (s.flags & FLAG_DRAIN_FULL) ++drain_fulls;
-            if (s.flags & FLAG_STALE)      ++stales;
+            if (s.flags & FLAG_REBASED)  ++rebases;
+            if (s.flags & FLAG_DRAIN_FULL)   ++drain_fulls;
+            if (s.flags & FLAG_STALE)   ++stales;
             if (s.age_imu_ns != kAgeNone &&
                 slots.imu.expected_period_ns > 0 &&
                 s.age_imu_ns > slots.imu.expected_period_ns * stale_lim) ++stale_imu;
@@ -259,6 +334,7 @@ int main(int argc, char** argv) {
     // HOT PATH END
 
     if (sock >= 0) close(sock);
+    sp_tx.close();
 
     const std::vector<std::string> meta = {
         std::string("platform=") + rt::platform_name(),
@@ -268,6 +344,13 @@ int main(int argc, char** argv) {
         "load_us=" + std::to_string(a.load_us),
         "warmup_discarded=" + std::to_string(a.warmup),
         "port=" + std::to_string(a.port),
+        "setpoint_port=" + std::to_string(a.setpoint_port),
+        "ctrl_every=" + std::to_string(kCtrlEvery),
+        "telem_every=" + std::to_string(kTelemEvery),
+        "ctrl_ticks=" + std::to_string(ctrl_ticks),
+        "telem_ticks=" + std::to_string(telem_ticks),
+        "setpoint_tx=" + std::to_string(setpoint_tx),
+        "setpoint_tx_drop=" + std::to_string(setpoint_tx_drop),
         "max_msgs_per_tick=" + std::to_string(kMaxMsgsPerTick),
         "overruns=" + std::to_string(overruns),
         "rebases=" + std::to_string(rebases),
@@ -302,8 +385,11 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr,
-                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, %u parse_ok, %u seq_gaps, %u stale, %u stale_imu, %u stale_pos, %u stale_gps\n",
-                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls, parse_ok, seq_gaps, stales,
-                 stale_imu, stale_pos, stale_gps);
+                 "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, "
+                 "%u parse_ok, %u seq_gaps, %u stale, %u stale_imu, %u stale_pos, "
+                 "%u stale_gps, %u ctrl, %u telem, %u setpoint_tx, %u setpoint_tx_drop\n",
+                 a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls,
+                 parse_ok, seq_gaps, stales, stale_imu, stale_pos, stale_gps,
+                 ctrl_ticks, telem_ticks, setpoint_tx, setpoint_tx_drop);
     return 0;
 }

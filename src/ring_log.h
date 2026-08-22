@@ -7,12 +7,19 @@
 constexpr int32_t kSkewNone = INT32_MIN;  // no IMU this tick; not a skew sample
 constexpr int64_t kAgeNone  = INT64_MIN;  // slot never filled; not an age sample
 
+// Decimation class for this tick. Bitmask so control+telem co-issue on the 25th.
+enum : uint8_t {
+    TICK_CTRL  = 1u << 0,  // every 5th tick at 250 Hz → 50 Hz
+    TICK_TELEM = 1u << 1,  // every 25th tick → 10 Hz
+};
+
 // One row per loop iteration. POD, small, written from inside the hot loop.
 struct Sample {
     int64_t  deadline_ns;
     int32_t  wake_err_ns;   // actual wake minus deadline. scheduler lateness.
     int32_t  exec_ns;       // how long the work in this period took
-    int32_t  rx_ns;         // drain+parse+slot as one receive path. not parse_ns; ekf_ns/ctrl_ns land beside this.
+    int32_t  rx_ns;         // drain+parse+slot as one receive path. not parse_ns; ekf_ns lands beside this.
+    int32_t  ctrl_ns;       // control+setpoint stage. 0 when TICK_CTRL is clear; analysis drops those.
     uint32_t seq;
     uint32_t flags;
     uint16_t rx_count;      // datagrams drained this tick. 0 with no socket.
@@ -21,6 +28,7 @@ struct Sample {
     int64_t  age_imu_ns;    // woke - rx_mono_ns at read. kAgeNone if the slot was never filled.
     int64_t  age_pos_ns;
     int64_t  age_gps_ns;
+    uint8_t  tick_class;    // TICK_CTRL / TICK_TELEM bits. separates expensive ticks in analysis.
 };
 
 // Wake error and budget violations are different failure modes. A 50 ms stall
@@ -48,16 +56,18 @@ class RingLog {
         FILE* f = std::fopen(path.c_str(), "w");
         if (!f) return false;
         for (const auto& m : meta) std::fprintf(f, "# %s\n", m.c_str());
-        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,flags,rx_count,seq_gaps,skew_ns,age_imu_ns,age_pos_ns,age_gps_ns\n");
+        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,ctrl_ns,flags,rx_count,seq_gaps,skew_ns,age_imu_ns,age_pos_ns,age_gps_ns,tick_class\n");
         for (size_t i = 0; i < n_; ++i) {
             const Sample& s = buf_[i];
-            std::fprintf(f, "%u,%lld,%d,%d,%d,%u,%u,%u,%d,%lld,%lld,%lld\n", s.seq,
+            std::fprintf(f, "%u,%lld,%d,%d,%d,%d,%u,%u,%u,%d,%lld,%lld,%lld,%u\n", s.seq,
                          static_cast<long long>(s.deadline_ns), s.wake_err_ns,
-                         s.exec_ns, s.rx_ns, s.flags, static_cast<unsigned>(s.rx_count),
+                         s.exec_ns, s.rx_ns, s.ctrl_ns, s.flags,
+                         static_cast<unsigned>(s.rx_count),
                          static_cast<unsigned>(s.seq_gaps), s.skew_ns,
                          static_cast<long long>(s.age_imu_ns),
                          static_cast<long long>(s.age_pos_ns),
-                         static_cast<long long>(s.age_gps_ns));
+                         static_cast<long long>(s.age_gps_ns),
+                         static_cast<unsigned>(s.tick_class));
         }
         std::fclose(f);
         return true;

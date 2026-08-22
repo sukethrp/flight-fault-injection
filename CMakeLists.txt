@@ -29,7 +29,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(rt_platform PRIVATE _GNU_SOURCE)
 endif()
 
-add_executable(loop_bench src/loop_bench.cpp)
+add_executable(loop_bench
+  src/loop_bench.cpp
+  src/control.cpp
+  src/trajectory.cpp
+  src/setpoint_tx.cpp)
 target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)
 
 add_executable(udp_sender tools/udp_sender.cpp)
@@ -51,9 +55,16 @@ add_dependencies(test_udp_sender udp_sender)
 add_executable(test_plant tests/test_plant.cpp)
 target_include_directories(test_plant PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
+add_executable(test_control
+  tests/test_control.cpp
+  src/control.cpp
+  src/trajectory.cpp)
+target_include_directories(test_control PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
 enable_testing()
 add_test(NAME test_msg_slots COMMAND test_msg_slots)
 add_test(NAME test_udp_sender COMMAND test_udp_sender)
 add_test(NAME test_plant COMMAND test_plant)
+add_test(NAME test_control COMMAND test_control)
 add_test(NAME test_percentiles COMMAND python3
   "${CMAKE_SOURCE_DIR}/analysis/test_percentiles.py")
