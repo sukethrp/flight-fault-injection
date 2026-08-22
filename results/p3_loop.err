@@ -1,0 +1,1 @@
+results/p3_closed.csv: 60000 samples, 0 overruns, 0 rebases, 109200 rx, 2 drain_full, 109200 parse_ok, 0 seq_gaps, 16 stale, 16 stale_imu, 0 stale_pos, 0 stale_gps, 12400 ctrl, 2480 telem, 12400 setpoint_tx, 0 setpoint_tx_drop

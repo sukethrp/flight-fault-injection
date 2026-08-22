@@ -486,3 +486,13 @@ Floors at 250 Hz, limit 3: IMU 8 ms, position 60 ms, GPS 600 ms.
 
 `rx_ns` stays drain+parse+slot. Not split, not renamed parse_ns. Phase 4
 adds `ekf_ns` / `ctrl_ns` beside it.
+
+## 2026-08-22 - b96bc23 does not configure
+
+`b96bc23` (plant) does not configure; fixed in the following commit. Cause
+was a pre-commit hook that ran `cmake --build build` against the working
+tree rather than the index, so three commits with incomplete staged content
+passed. Same species as the a650acb retraction: the check looked at the
+wrong snapshot. Hook now `git checkout-index`s the staged tree into a temp
+dir and configures/builds that. A repo that records its own broken commits
+reads as more trustworthy than one that appears never to have had any.

@@ -1,0 +1,1 @@
+results/p3_reconcile.csv: 2500 samples, 0 overruns, 0 rebases, 4550 rx, 0 drain_full, 4550 parse_ok, 0 seq_gaps, 1 stale, 1 stale_imu, 0 stale_pos, 0 stale_gps, 600 ctrl, 120 telem, 600 setpoint_tx, 0 setpoint_tx_drop
