@@ -19,6 +19,7 @@ struct Sample {
     int32_t  wake_err_ns;   // actual wake minus deadline. scheduler lateness.
     int32_t  exec_ns;       // how long the work in this period took
     int32_t  rx_ns;         // drain+parse+slot as one receive path. not parse_ns; ekf_ns lands beside this.
+    int32_t  ekf_ns;        // predict (+ correct when a new pos arrived). 0 if --ekf off.
     int32_t  ctrl_ns;       // control+setpoint stage. 0 when TICK_CTRL is clear; analysis drops those.
     uint32_t seq;
     uint32_t flags;
@@ -29,6 +30,16 @@ struct Sample {
     int64_t  age_pos_ns;
     int64_t  age_gps_ns;
     uint8_t  tick_class;    // TICK_CTRL / TICK_TELEM bits. separates expensive ticks in analysis.
+    // EKF snapshot at 50 Hz (TICK_CTRL). Zero on other ticks so the 250 Hz
+    // rows stay cheap to scan; estimator_error.py keeps TICK_CTRL only.
+    float    ekf_pn, ekf_pe, ekf_pd;
+    float    ekf_vn, ekf_ve, ekf_vd;
+    float    ekf_trace_p;
+    float    ekf_nis;
+    uint32_t ekf_rejects;
+    uint32_t det_mask;      // DET_* bits tripped this tick
+    uint8_t  fsm_state;     // FailsafeState ordinal
+    int32_t  est_err_um;    // ||p_hat - p_meas|| in micrometres; INT32_MIN if unset
 };
 
 // Wake error and budget violations are different failure modes. A 50 ms stall
@@ -56,18 +67,29 @@ class RingLog {
         FILE* f = std::fopen(path.c_str(), "w");
         if (!f) return false;
         for (const auto& m : meta) std::fprintf(f, "# %s\n", m.c_str());
-        std::fprintf(f, "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,ctrl_ns,flags,rx_count,seq_gaps,skew_ns,age_imu_ns,age_pos_ns,age_gps_ns,tick_class\n");
+        std::fprintf(f,
+            "seq,deadline_ns,wake_err_ns,exec_ns,rx_ns,ekf_ns,ctrl_ns,flags,rx_count,seq_gaps,"
+            "skew_ns,age_imu_ns,age_pos_ns,age_gps_ns,tick_class,"
+            "ekf_pn,ekf_pe,ekf_pd,ekf_vn,ekf_ve,ekf_vd,ekf_trace_p,ekf_nis,ekf_rejects,"
+            "det_mask,fsm_state,est_err_um\n");
         for (size_t i = 0; i < n_; ++i) {
             const Sample& s = buf_[i];
-            std::fprintf(f, "%u,%lld,%d,%d,%d,%d,%u,%u,%u,%d,%lld,%lld,%lld,%u\n", s.seq,
-                         static_cast<long long>(s.deadline_ns), s.wake_err_ns,
-                         s.exec_ns, s.rx_ns, s.ctrl_ns, s.flags,
-                         static_cast<unsigned>(s.rx_count),
-                         static_cast<unsigned>(s.seq_gaps), s.skew_ns,
-                         static_cast<long long>(s.age_imu_ns),
-                         static_cast<long long>(s.age_pos_ns),
-                         static_cast<long long>(s.age_gps_ns),
-                         static_cast<unsigned>(s.tick_class));
+            std::fprintf(f,
+                "%u,%lld,%d,%d,%d,%d,%d,%u,%u,%u,%d,%lld,%lld,%lld,%u,"
+                "%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%u,%u,%u,%d\n",
+                s.seq,
+                static_cast<long long>(s.deadline_ns), s.wake_err_ns,
+                s.exec_ns, s.rx_ns, s.ekf_ns, s.ctrl_ns, s.flags,
+                static_cast<unsigned>(s.rx_count),
+                static_cast<unsigned>(s.seq_gaps), s.skew_ns,
+                static_cast<long long>(s.age_imu_ns),
+                static_cast<long long>(s.age_pos_ns),
+                static_cast<long long>(s.age_gps_ns),
+                static_cast<unsigned>(s.tick_class),
+                s.ekf_pn, s.ekf_pe, s.ekf_pd,
+                s.ekf_vn, s.ekf_ve, s.ekf_vd,
+                s.ekf_trace_p, s.ekf_nis, s.ekf_rejects,
+                s.det_mask, static_cast<unsigned>(s.fsm_state), s.est_err_um);
         }
         std::fclose(f);
         return true;

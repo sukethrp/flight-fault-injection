@@ -1,4 +1,7 @@
 #include "control.h"
+#include "detectors.h"
+#include "ekf.h"
+#include "failsafe.h"
 #include "msg_slots.h"
 #include "ring_log.h"
 #include "rt_platform.h"
@@ -6,6 +9,7 @@
 #include "trajectory.h"
 #include "udp_rx.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -27,8 +31,10 @@ struct Args {
     int         constraint_us  = 0;
     int         staleness_limit_periods = 3;
     bool        rt      = false;
+    bool        ekf     = false;
     std::string label;
     std::string out = "results/loop.csv";
+    std::string fsm_out;  // failsafe transition log; empty skips write
 };
 
 // 400 Hz sender / 250 Hz loop = 1.6 datagrams per tick. 8 is 5x that mean,
@@ -54,8 +60,10 @@ bool parse(int argc, char** argv, Args& a) {
         else if (f == "--prio")    a.prio    = std::atoi(next());
         else if (f == "--core")    a.core    = std::atoi(next());
         else if (f == "--rt")      a.rt      = true;
+        else if (f == "--ekf")     a.ekf     = true;
         else if (f == "--label")   a.label   = next();
         else if (f == "--out")     a.out     = next();
+        else if (f == "--fsm-out") a.fsm_out = next();
         else if (f == "--port")    a.port    = std::atoi(next());
         else if (f == "--setpoint-port") a.setpoint_port = std::atoi(next());
         else if (f == "--computation-us") a.computation_us = std::atoi(next());
@@ -146,6 +154,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Filter runs beside the controller; closed-loop still feeds on the
+    // position slot until Phase 4 closes on the estimate.
+    Ekf      ekf;
+    float    ekf_dt = static_cast<float>(period_ns) * 1e-9f;
+    if (a.ekf) {
+        float x0[Ekf::kN]{};
+        float P0[Ekf::kN] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
+        ekf.reset(x0, P0);
+    }
+
+    DetectorConfig dcfg;
+    dcfg.loop_period_ns          = period_ns;
+    dcfg.staleness_limit_periods = a.staleness_limit_periods;
+    Detectors        detectors(dcfg);
+    const DetectorFloors dfloors = detectors.floors();
+    FailsafeEventLog fsm_log(4096);
+    Failsafe         failsafe(FailsafeConfig{}, &fsm_log);
+
     uint16_t ctrl_div  = 0;
     uint16_t telem_div = 0;
 
@@ -210,6 +236,29 @@ int main(int argc, char** argv) {
             rx_ns = static_cast<int32_t>(rt::now_ns() - t0);
         }
 
+        int32_t ekf_ns = 0;
+        if (a.ekf) {
+            const int64_t e0 = rt::now_ns();
+            if (slots.imu.valid) {
+                const float accel[3] = {
+                    slots.imu.payload.xacc,
+                    slots.imu.payload.yacc,
+                    slots.imu.payload.zacc,
+                };
+                ekf.predict(accel, ekf_dt);
+            }
+            // New LOCAL_POSITION_NED this tick: rx stamp equals this wake.
+            if (slots.pos.valid && slots.pos.rx_mono_ns == woke) {
+                const float z[3] = {
+                    slots.pos.payload.x,
+                    slots.pos.payload.y,
+                    slots.pos.payload.z,
+                };
+                (void)ekf.correct(z);
+            }
+            ekf_ns = static_cast<int32_t>(rt::now_ns() - e0);
+        }
+
         uint8_t tick_class = 0;
         int32_t ctrl_ns = 0;
         ++ctrl_div;
@@ -260,6 +309,7 @@ int main(int argc, char** argv) {
         s.wake_err_ns = static_cast<int32_t>(woke - next);
         s.exec_ns     = static_cast<int32_t>(done - woke);
         s.rx_ns       = rx_ns;
+        s.ekf_ns      = ekf_ns;
         s.ctrl_ns = ctrl_ns;
         s.seq         = static_cast<uint32_t>(i);
         s.rx_count    = rx;
@@ -269,6 +319,19 @@ int main(int argc, char** argv) {
         s.age_pos_ns  = kAgeNone;
         s.age_gps_ns  = kAgeNone;
         s.tick_class = tick_class;
+        // 50 Hz snapshot (control decimation), not every 250 Hz tick.
+        if (a.ekf && (tick_class & TICK_CTRL) != 0) {
+            const float* x = ekf.state();
+            s.ekf_pn = x[0];
+            s.ekf_pe = x[1];
+            s.ekf_pd = x[2];
+            s.ekf_vn = x[3];
+            s.ekf_ve = x[4];
+            s.ekf_vd = x[5];
+            s.ekf_trace_p = ekf.trace_p();
+            s.ekf_nis     = ekf.last_nis();
+            s.ekf_rejects = ekf.reject_count();
+        }
         if (slots.imu.valid && slots.imu.rx_mono_ns == woke) {
             s.skew_ns = static_cast<int32_t>(
                 static_cast<int64_t>(slots.imu.sender_us * 1000ull) - slots.imu.rx_mono_ns);
@@ -311,6 +374,47 @@ int main(int argc, char** argv) {
             s.flags |= FLAG_REBASED;
         }
 
+        DetectorInput din{};
+        din.mono_ns     = woke;
+        din.age_imu_ns  = s.age_imu_ns;
+        din.age_pos_ns  = s.age_pos_ns;
+        din.age_gps_ns  = s.age_gps_ns;
+        din.seq_gaps    = gaps;
+        din.skew_ns     = s.skew_ns;
+        din.flags       = s.flags;
+        din.sensor_sample = slots.imu.valid && slots.imu.rx_mono_ns == woke;
+        if (din.sensor_sample) {
+            din.sensor[0] = slots.imu.payload.xacc;
+            din.sensor[1] = slots.imu.payload.yacc;
+            din.sensor[2] = slots.imu.payload.zacc;
+        }
+        din.trace_p     = a.ekf ? ekf.trace_p() : 0.0f;
+        din.nis_rejects = a.ekf ? ekf.reject_count() : 0;
+        const DetectorOutput dout = detectors.evaluate(din);
+
+        s.det_mask   = dout.mask;
+        s.est_err_um = INT32_MIN;
+        if (a.ekf && slots.pos.valid) {
+            const float* x = ekf.state();
+            const float dx = x[0] - slots.pos.payload.x;
+            const float dy = x[1] - slots.pos.payload.y;
+            const float dz = x[2] - slots.pos.payload.z;
+            const float err = std::sqrt(dx * dx + dy * dy + dz * dz);
+            s.est_err_um = static_cast<int32_t>(err * 1e6f);
+        }
+
+        FailsafeInput fin{};
+        fin.det_mask    = dout.mask;
+        fin.det_rising  = dout.rising;
+        fin.nis_rejects = dout.nis_rejects;
+        fin.est_err_m   = s.est_err_um == INT32_MIN
+                              ? 0.0f
+                              : static_cast<float>(s.est_err_um) * 1e-6f;
+        fin.trace_p     = dout.trace_p;
+        fin.mono_ns     = woke;
+        failsafe.evaluate(fin);
+        s.fsm_state = static_cast<uint8_t>(failsafe.state());
+
         if (i >= static_cast<size_t>(a.warmup)) {
             if (s.flags & FLAG_OVERRUN)    ++overruns;
             if (s.flags & FLAG_REBASED)  ++rebases;
@@ -345,6 +449,7 @@ int main(int argc, char** argv) {
         "warmup_discarded=" + std::to_string(a.warmup),
         "port=" + std::to_string(a.port),
         "setpoint_port=" + std::to_string(a.setpoint_port),
+        "ekf=" + std::string(a.ekf ? "1" : "0"),
         "ctrl_every=" + std::to_string(kCtrlEvery),
         "telem_every=" + std::to_string(kTelemEvery),
         "ctrl_ticks=" + std::to_string(ctrl_ticks),
@@ -363,6 +468,15 @@ int main(int argc, char** argv) {
         "staleness_floor_imu_ns=" + std::to_string(imu_floor_ns),
         "staleness_floor_pos_ns=" + std::to_string(pos_floor_ns),
         "staleness_floor_gps_ns=" + std::to_string(gps_floor_ns),
+        "floor_seq_gap_ns=" + std::to_string(dfloors.seq_gap_ns),
+        "floor_clock_skew_ns=" + std::to_string(dfloors.clock_skew_ns),
+        "floor_deadline_miss_ns=" + std::to_string(dfloors.deadline_miss_ns),
+        "floor_stuck_sensor_ns=" + std::to_string(dfloors.stuck_sensor_ns),
+        "floor_est_diverge_ns=" + std::to_string(dfloors.est_diverge_ns),
+        "skew_ppm_limit=" + std::to_string(dcfg.skew_ppm_limit),
+        "overrun_streak=" + std::to_string(dcfg.overrun_streak),
+        "stuck_window=" + std::to_string(dcfg.stuck_window),
+        "trace_p_limit=" + std::to_string(dcfg.trace_p_limit),
         "imu_period_ns=" + std::to_string(kImuPeriodNs),
         "pos_period_ns=" + std::to_string(kPosPeriodNs),
         "gps_period_ns=" + std::to_string(kGpsPeriodNs),
@@ -384,12 +498,18 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "could not write %s\n", a.out.c_str());
         return 1;
     }
+    if (!a.fsm_out.empty() && !fsm_log.write_csv(a.fsm_out, meta)) {
+        std::fprintf(stderr, "could not write %s\n", a.fsm_out.c_str());
+        return 1;
+    }
     std::fprintf(stderr,
                  "%s: %zu samples, %u overruns, %u rebases, %u rx, %u drain_full, "
                  "%u parse_ok, %u seq_gaps, %u stale, %u stale_imu, %u stale_pos, "
-                 "%u stale_gps, %u ctrl, %u telem, %u setpoint_tx, %u setpoint_tx_drop\n",
+                 "%u stale_gps, %u ctrl, %u telem, %u setpoint_tx, %u setpoint_tx_drop, "
+                 "%zu fsm_events\n",
                  a.out.c_str(), log.size(), overruns, rebases, rx_total, drain_fulls,
                  parse_ok, seq_gaps, stales, stale_imu, stale_pos, stale_gps,
-                 ctrl_ticks, telem_ticks, setpoint_tx, setpoint_tx_drop);
+                 ctrl_ticks, telem_ticks, setpoint_tx, setpoint_tx_drop,
+                 fsm_log.size());
     return 0;
 }

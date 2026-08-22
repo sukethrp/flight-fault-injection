@@ -33,7 +33,10 @@ add_executable(loop_bench
   src/loop_bench.cpp
   src/control.cpp
   src/trajectory.cpp
-  src/setpoint_tx.cpp)
+  src/setpoint_tx.cpp
+  src/ekf.cpp
+  src/detectors.cpp
+  src/failsafe.cpp)
 target_link_libraries(loop_bench PRIVATE rt_platform Threads::Threads)
 
 add_executable(udp_sender tools/udp_sender.cpp)
@@ -42,6 +45,12 @@ target_link_libraries(udp_sender PRIVATE rt_platform)
 add_executable(plant tools/plant.cpp)
 target_link_libraries(plant PRIVATE rt_platform)
 target_include_directories(plant PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
+add_executable(proxy injector/proxy.cpp injector/fault.cpp)
+target_link_libraries(proxy PRIVATE rt_platform)
+target_include_directories(proxy PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/injector"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 add_executable(test_msg_slots tests/test_msg_slots.cpp)
 target_link_libraries(test_msg_slots PRIVATE rt_platform)
@@ -61,10 +70,29 @@ add_executable(test_control
   src/trajectory.cpp)
 target_include_directories(test_control PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
+add_executable(test_ekf
+  tests/test_ekf.cpp
+  src/ekf.cpp)
+target_include_directories(test_ekf PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
+add_executable(test_detectors
+  tests/test_detectors.cpp
+  src/detectors.cpp
+  src/failsafe.cpp)
+target_link_libraries(test_detectors PRIVATE rt_platform)
+target_include_directories(test_detectors SYSTEM PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mavlink")
+
 enable_testing()
 add_test(NAME test_msg_slots COMMAND test_msg_slots)
 add_test(NAME test_udp_sender COMMAND test_udp_sender)
 add_test(NAME test_plant COMMAND test_plant)
 add_test(NAME test_control COMMAND test_control)
+add_test(NAME test_ekf COMMAND test_ekf)
+add_test(NAME test_detectors COMMAND test_detectors)
 add_test(NAME test_percentiles COMMAND python3
   "${CMAKE_SOURCE_DIR}/analysis/test_percentiles.py")
+add_test(NAME test_estimator_error COMMAND python3
+  "${CMAKE_SOURCE_DIR}/analysis/test_estimator_error.py")
+add_test(NAME test_fault_table COMMAND python3
+  "${CMAKE_SOURCE_DIR}/analysis/test_fault_table.py")
