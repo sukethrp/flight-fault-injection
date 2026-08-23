@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mechanical enforcement of the rules that .cursor/rules only advises.
+# Mechanical enforcement of the rules that docs/ENGINEERING.md states.
 # Bypass: git commit --no-verify  (do it consciously, note it in NOTES.md)
 #
 # Install this file as both pre-commit and commit-msg. pre-commit runs
@@ -77,7 +77,7 @@ while IFS= read -r f; do
     if [[ -n "$hits" ]]; then
         echo "pre-commit: hot path violation in $f"
         echo "$hits" | sed 's/^/            /'
-        echo "            see .cursor/rules/10-hot-path.mdc"
+        echo "            see docs/ENGINEERING.md (Hot path invariants)"
         fail=1
     fi
 done <<< "$staged"

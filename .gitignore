@@ -4,6 +4,7 @@ __pycache__/
 loop_bench
 *.o
 .DS_Store
+.cursor/
 
 # Raw results are 30 MB per hour-long run and git history is forever.
 # Commit the gzip instead: results/*.csv.gz

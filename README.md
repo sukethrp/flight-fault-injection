@@ -197,7 +197,7 @@ tools/         plant and UDP sender fixtures
 injector/      MAVLink proxy + fault configs (eleven one-fault .conf files)
 analysis/      percentile tables and the four figures
 scripts/       hour campaign, fault campaign, netfault, pre-commit hook
-docs/          DESIGN.md sequencing, RUNBOOK.md operational footguns
+docs/          ENGINEERING.md standards, DESIGN.md sequencing, RUNBOOK.md
 results/       gzipped CSVs and figures (every README number traces here)
 ```
 

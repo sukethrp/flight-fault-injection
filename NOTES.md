@@ -50,6 +50,7 @@ about 7 minutes. Planning one hour per configuration for margin.
 **Environment.** clang 21, cmake via Homebrew, python 3.13. Commit hook installed
 from scripts/pre-commit: blocks agent-shell commits, oversized files,
 uncompressed result CSVs, and banned calls between the hot path sentinels.
+Standards live in `docs/ENGINEERING.md` (formerly local `.cursor/rules/`).
 
 ## 2026-08-16 - clock layer, measured drift
 
@@ -464,7 +465,7 @@ and the message contains a number with a unit (us, ms, ns, %), unless
 something under results/ is also staged. Same file is installed as
 commit-msg: pre-commit runs before `git commit -m` writes the message,
 so a pre-commit-only check would miss the subject. That is the a650acb
-failure mode.
+failure mode. Codified in `docs/ENGINEERING.md` (Commit discipline).
 
 ## 2026-08-19 - one host, three rates
 
@@ -494,7 +495,8 @@ was a pre-commit hook that ran `cmake --build build` against the working
 tree rather than the index, so three commits with incomplete staged content
 passed. Same species as the a650acb retraction: the check looked at the
 wrong snapshot. Hook now `git checkout-index`s the staged tree into a temp
-dir and configures/builds that. A repo that records its own broken commits
+dir and configures/builds that. Codified in `docs/ENGINEERING.md`
+(Commit discipline). A repo that records its own broken commits
 reads as more trustworthy than one that appears never to have had any.
 
 ## 2026-08-22 - ω sweep on tracking asymmetry
@@ -523,7 +525,8 @@ to 20 s laps after the run.
 
 Scaffold is agent work. The update equations, the FSM policy, and the
 payload corruptors are not. That is the interview surface: roughly three
-hundred lines the author has to defend from memory.
+hundred lines the author has to defend from memory. Ownership table also
+in `docs/ENGINEERING.md` (Hand-authored components).
 
 | Where | What | Why it is the one asked about |
 |---|---|---|
