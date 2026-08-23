@@ -1,0 +1,2 @@
+results/fp_clean_1h.csv: 900000 samples, 559 overruns, 560 rebases, 1639526 rx, 66 drain_full, 1639526 parse_ok, 0 seq_gaps, 57 stale, 54 stale_imu, 5 stale_pos, 0 stale_gps, 180400 ctrl, 36080 telem, 180400 setpoint_tx, 0 setpoint_tx_drop, 0 fsm_events
+loop_rc=0 Sat Aug 22 22:01:44 EDT 2026

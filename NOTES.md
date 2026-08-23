@@ -546,3 +546,15 @@ Phases 4–7 were uncommitted at `ddb0162`. Commits `6bcac91`..`0f2a23b`
 were made with `CURSOR_AGENT` unset so the pre-commit agent gate passed
 while build/hot-path checks still ran. Author still owns predict/correct,
 FSM predicates, and payload corruptors.
+
+## 2026-08-22 - one-hour clean false-positive rate
+
+`results/fp_clean_1h.md`, n=900000, timeshare (`scheduler_applied=0`).
+`--rt` with default Darwin constraint (750 µs / 2 ms) starved the
+`--ekf` tick; this run is without `--rt`.
+
+Overall rising-edge rate 1.052e-01. Dominated by `clock_skew` (94541
+rising / 1.050e-01): the mask is level-per-tick and clears on non-IMU
+ticks, so a sustained trip counts as a rising edge every IMU sample.
+Zero-event detectors (stale_gps, seq_gap, est_diverge) get 95% upper
+bound 3/n = 3.333e-06.
