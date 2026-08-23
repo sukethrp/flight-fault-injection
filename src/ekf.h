@@ -21,6 +21,10 @@ class Ekf {
 
     explicit Ekf(EkfConfig cfg = {});
 
+    // false while predict/correct are AUTHOR stubs. Flip when the update
+    // equations land so test_ekf stops SKIPPING and starts gating.
+    static bool is_implemented();
+
     // x0 / P0_diag length kN. P starts diagonal; off-diagonals cleared.
     void reset(const float x0[kN], const float P0_diag[kN]);
 

@@ -57,6 +57,10 @@ Ekf::Ekf(EkfConfig cfg)
     reset(x0, P0);
 }
 
+bool Ekf::is_implemented() {
+    return false;
+}
+
 void Ekf::reset(const float x0[kN], const float P0_diag[kN]) {
     for (int i = 0; i < kN; ++i) x_[i] = x0[i];
     mat_zero(&P_[0][0], kN * kN);

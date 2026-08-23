@@ -558,3 +558,14 @@ rising / 1.050e-01): the mask is level-per-tick and clears on non-IMU
 ticks, so a sustained trip counts as a rising edge every IMU sample.
 Zero-event detectors (stale_gps, seq_gap, est_diverge) get 95% upper
 bound 3/n = 3.333e-06.
+
+**Verdict (do not park on passthrough estimator).** Breakdown is not
+divergence/NIS: `est_diverge=0`, and the stub leaves `trace(P)` at the
+reset sum so the diverge bit cannot be driving the rate. 94541/94678 of
+rising edges are `clock_skew`. Do not mark `1.052e-01` provisional next to
+the p5 passthrough estimator rows — that gate is already provisional for
+its own reason (AUTHOR stubs). Overall rate is not a detector FP claim;
+it is a skew rising-edge accounting artefact. Trustworthy zeros today:
+`stale_gps`, `seq_gap`, `est_diverge`. Non-zeros that are small but real
+on this timeshare soak: `stale_imu=53`, `stale_pos=2`, `deadline_miss=3`,
+`stuck_sensor=79`. `clock_skew` is not a trustworthy zero.

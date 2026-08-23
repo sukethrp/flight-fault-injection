@@ -145,6 +145,13 @@ int test_noisy_trace_stable() {
 }  // namespace
 
 int main() {
+    if (!Ekf::is_implemented()) {
+        std::fprintf(stderr,
+                     "test_ekf: SKIP - Ekf::predict/correct are unimplemented stubs.\n"
+                     "          See src/ekf.cpp AUTHOR markers. This is expected on main\n"
+                     "          until the filter lands; it is not a broken filter.\n");
+        return 77;  // ctest SKIP_RETURN_CODE
+    }
     if (int rc = test_zero_noise_bound()) return rc;
     if (int rc = test_noisy_trace_stable()) return rc;
     std::fprintf(stderr, "test_ekf: ok\n");

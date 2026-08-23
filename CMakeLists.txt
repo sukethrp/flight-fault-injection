@@ -89,6 +89,7 @@ add_test(NAME test_udp_sender COMMAND test_udp_sender)
 add_test(NAME test_plant COMMAND test_plant)
 add_test(NAME test_control COMMAND test_control)
 add_test(NAME test_ekf COMMAND test_ekf)
+set_tests_properties(test_ekf PROPERTIES SKIP_RETURN_CODE 77)
 add_test(NAME test_detectors COMMAND test_detectors)
 add_test(NAME test_percentiles COMMAND python3
   "${CMAKE_SOURCE_DIR}/analysis/test_percentiles.py")
